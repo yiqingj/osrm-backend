@@ -1,5 +1,5 @@
-#ifndef PARTITIONER_CONFIG_HPP
-#define PARTITIONER_CONFIG_HPP
+#ifndef OSRM_CUSTOMIZE_CUSTOMIZER_CONFIG_HPP
+#define OSRM_CUSTOMIZE_CUSTOMIZER_CONFIG_HPP
 
 #include <boost/filesystem/path.hpp>
 
@@ -8,15 +8,12 @@
 
 namespace osrm
 {
-namespace partition
+namespace customize
 {
 
-struct PartitionConfig
+struct CustomizationConfig
 {
-    PartitionConfig()
-        : requested_num_threads(0), output_customization_data(true) // TODO change to false
-    {
-    }
+    CustomizationConfig() : requested_num_threads(0) {}
 
     void UseDefaults()
     {
@@ -47,15 +44,8 @@ struct PartitionConfig
     boost::filesystem::path partition_path;
 
     unsigned requested_num_threads;
-
-    std::size_t maximum_cell_size;
-    double balance;
-    double boundary_factor;
-    std::size_t num_optimizing_cuts;
-    std::size_t small_component_size;
-    bool output_customization_data;
 };
 }
 }
 
-#endif // PARTITIONER_CONFIG_HPP
+#endif // OSRM_CUSTOMIZE_CUSTOMIZER_CONFIG_HPP
