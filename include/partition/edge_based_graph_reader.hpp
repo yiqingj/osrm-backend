@@ -100,8 +100,6 @@ struct EdgeBasedGraphReader
                                   edge.forward);
         }
 
-        std::swap(directed, edges);
-
         return directed;
     }
 
