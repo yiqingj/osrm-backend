@@ -245,7 +245,13 @@ void Sol2ScriptingEnvironment::InitContext(LuaScriptingContext &context)
         "weight_precision",
         &ProfileProperties::weight_precision,
         "weight_name",
-        sol::property(&ProfileProperties::SetWeightName, &ProfileProperties::GetWeightName));
+        sol::property(&ProfileProperties::SetWeightName, &ProfileProperties::GetWeightName),
+        "max_turn_weight",
+        sol::property(&ProfileProperties::GetMaxTurnWeight),
+        "force_split_edges",
+        &ProfileProperties::force_split_edges,
+        "call_tagless_node_function",
+        &ProfileProperties::call_tagless_node_function);
 
     context.state.new_usertype<std::vector<std::string>>(
         "vector",
@@ -328,12 +334,6 @@ void Sol2ScriptingEnvironment::InitContext(LuaScriptingContext &context)
         sol::property(&ExtractionWay::GetTurnLanesForward, &ExtractionWay::SetTurnLanesForward),
         "turn_lanes_backward",
         sol::property(&ExtractionWay::GetTurnLanesBackward, &ExtractionWay::SetTurnLanesBackward),
-        "roundabout",
-        &ExtractionWay::roundabout,
-        "circular",
-        &ExtractionWay::circular,
-        "is_startpoint",
-        &ExtractionWay::is_startpoint,
         "duration",
         &ExtractionWay::duration,
         "weight",
@@ -341,13 +341,26 @@ void Sol2ScriptingEnvironment::InitContext(LuaScriptingContext &context)
         "road_classification",
         &ExtractionWay::road_classification,
         "forward_mode",
-        sol::property(&ExtractionWay::get_forward_mode, &ExtractionWay::set_forward_mode),
+        sol::property([](const ExtractionWay &way) { return way.forward_travel_mode; },
+                      [](ExtractionWay &way, TravelMode mode) { way.forward_travel_mode = mode; }),
         "backward_mode",
-        sol::property(&ExtractionWay::get_backward_mode, &ExtractionWay::set_backward_mode),
+        sol::property([](const ExtractionWay &way) { return way.backward_travel_mode; },
+                      [](ExtractionWay &way, TravelMode mode) { way.backward_travel_mode = mode; }),
+        "roundabout",
+        sol::property([](const ExtractionWay &way) { return way.roundabout; },
+                      [](ExtractionWay &way, bool flag) { way.roundabout = flag; }),
+        "circular",
+        sol::property([](const ExtractionWay &way) { return way.circular; },
+                      [](ExtractionWay &way, bool flag) { way.circular = flag; }),
+        "is_startpoint",
+        sol::property([](const ExtractionWay &way) { return way.is_startpoint; },
+                      [](ExtractionWay &way, bool flag) { way.is_startpoint = flag; }),
         "forward_restricted",
-        &ExtractionWay::forward_restricted,
+        sol::property([](const ExtractionWay &way) { return way.forward_restricted; },
+                      [](ExtractionWay &way, bool flag) { way.forward_restricted = flag; }),
         "backward_restricted",
-        &ExtractionWay::backward_restricted);
+        sol::property([](const ExtractionWay &way) { return way.backward_restricted; },
+                      [](ExtractionWay &way, bool flag) { way.backward_restricted = flag; }));
 
     context.state.new_usertype<ExtractionSegment>("ExtractionSegment",
                                                   "source",
@@ -416,15 +429,16 @@ void Sol2ScriptingEnvironment::InitContext(LuaScriptingContext &context)
 
     context.state.script_file(file_name);
 
-    sol::function turn_function = context.state["turn_function"];
-    sol::function node_function = context.state["node_function"];
-    sol::function way_function = context.state["way_function"];
-    sol::function segment_function = context.state["segment_function"];
+    // cache references to functions for faster execution
+    context.turn_function = context.state["turn_function"];
+    context.node_function = context.state["node_function"];
+    context.way_function = context.state["way_function"];
+    context.segment_function = context.state["segment_function"];
 
-    context.has_turn_penalty_function = turn_function.valid();
-    context.has_node_function = node_function.valid();
-    context.has_way_function = way_function.valid();
-    context.has_segment_function = segment_function.valid();
+    context.has_turn_penalty_function = context.turn_function.valid();
+    context.has_node_function = context.node_function.valid();
+    context.has_way_function = context.way_function.valid();
+    context.has_segment_function = context.segment_function.valid();
 
     // Check profile API version
     auto maybe_version = context.state.get<sol::optional<int>>("api_version");
@@ -475,53 +489,54 @@ LuaScriptingContext &Sol2ScriptingEnvironment::GetSol2Context()
 }
 
 void Sol2ScriptingEnvironment::ProcessElements(
-    const std::vector<osmium::memory::Buffer::const_iterator> &osm_elements,
+    const osmium::memory::Buffer &buffer,
     const RestrictionParser &restriction_parser,
-    tbb::concurrent_vector<std::pair<std::size_t, ExtractionNode>> &resulting_nodes,
-    tbb::concurrent_vector<std::pair<std::size_t, ExtractionWay>> &resulting_ways,
-    tbb::concurrent_vector<boost::optional<InputRestrictionContainer>> &resulting_restrictions)
+    std::vector<std::pair<const osmium::Node &, ExtractionNode>> &resulting_nodes,
+    std::vector<std::pair<const osmium::Way &, ExtractionWay>> &resulting_ways,
+    std::vector<boost::optional<InputRestrictionContainer>> &resulting_restrictions)
 {
-    // parse OSM entities in parallel, store in resulting vectors
-    tbb::parallel_for(
-        tbb::blocked_range<std::size_t>(0, osm_elements.size()),
-        [&](const tbb::blocked_range<std::size_t> &range) {
-            ExtractionNode result_node;
-            ExtractionWay result_way;
-            auto &local_context = this->GetSol2Context();
+    ExtractionNode result_node;
+    ExtractionWay result_way;
+    std::vector<InputRestrictionContainer> result_res;
+    auto &local_context = this->GetSol2Context();
 
-            for (auto x = range.begin(), end = range.end(); x != end; ++x)
+    for (auto entity = buffer.cbegin(), end = buffer.cend(); entity != end; ++entity)
+    {
+        switch (entity->type())
+        {
+        case osmium::item_type::node:
+            result_node.clear();
+            if (local_context.has_node_function &&
+                (!static_cast<const osmium::Node &>(*entity).tags().empty() ||
+                 local_context.properties.call_tagless_node_function))
             {
-                const auto entity = osm_elements[x];
-
-                switch (entity->type())
-                {
-                case osmium::item_type::node:
-                    result_node.clear();
-                    if (local_context.has_node_function)
-                    {
-                        local_context.ProcessNode(static_cast<const osmium::Node &>(*entity),
-                                                  result_node);
-                    }
-                    resulting_nodes.push_back(std::make_pair(x, std::move(result_node)));
-                    break;
-                case osmium::item_type::way:
-                    result_way.clear();
-                    if (local_context.has_way_function)
-                    {
-                        local_context.ProcessWay(static_cast<const osmium::Way &>(*entity),
-                                                 result_way);
-                    }
-                    resulting_ways.push_back(std::make_pair(x, std::move(result_way)));
-                    break;
-                case osmium::item_type::relation:
-                    resulting_restrictions.push_back(restriction_parser.TryParse(
-                        static_cast<const osmium::Relation &>(*entity)));
-                    break;
-                default:
-                    break;
-                }
+                local_context.ProcessNode(static_cast<const osmium::Node &>(*entity), result_node);
             }
-        });
+            resulting_nodes.push_back(std::pair<const osmium::Node &, ExtractionNode>(
+                static_cast<const osmium::Node &>(*entity), std::move(result_node)));
+            break;
+        case osmium::item_type::way:
+            result_way.clear();
+            if (local_context.has_way_function)
+            {
+                local_context.ProcessWay(static_cast<const osmium::Way &>(*entity), result_way);
+            }
+            resulting_ways.push_back(std::pair<const osmium::Way &, ExtractionWay>(
+                static_cast<const osmium::Way &>(*entity), std::move(result_way)));
+            break;
+        case osmium::item_type::relation:
+            result_res.clear();
+            result_res =
+                restriction_parser.TryParse(static_cast<const osmium::Relation &>(*entity));
+            for (const InputRestrictionContainer &r : result_res)
+            {
+                resulting_restrictions.push_back(r);
+            }
+            break;
+        default:
+            break;
+        }
+    }
 }
 
 std::vector<std::string> Sol2ScriptingEnvironment::GetNameSuffixList()
@@ -573,13 +588,12 @@ void Sol2ScriptingEnvironment::ProcessTurn(ExtractionTurn &turn)
 {
     auto &context = GetSol2Context();
 
-    sol::function turn_function = context.state["turn_function"];
     switch (context.api_version)
     {
     case 1:
         if (context.has_turn_penalty_function)
         {
-            turn_function(turn);
+            context.turn_function(turn);
 
             // Turn weight falls back to the duration value in deciseconds
             // or uses the extracted unit-less weight value
@@ -594,7 +608,7 @@ void Sol2ScriptingEnvironment::ProcessTurn(ExtractionTurn &turn)
             if (turn.turn_type != guidance::TurnType::NoTurn)
             {
                 // Get turn duration and convert deci-seconds to seconds
-                turn.duration = static_cast<double>(turn_function(turn.angle)) / 10.;
+                turn.duration = static_cast<double>(context.turn_function(turn.angle)) / 10.;
                 BOOST_ASSERT(turn.weight == 0);
 
                 // add U-turn penalty
@@ -625,14 +639,14 @@ void Sol2ScriptingEnvironment::ProcessSegment(ExtractionSegment &segment)
 
     if (context.has_segment_function)
     {
-        sol::function segment_function = context.state["segment_function"];
         switch (context.api_version)
         {
         case 1:
-            segment_function(segment);
+            context.segment_function(segment);
             break;
         case 0:
-            segment_function(segment.source, segment.target, segment.distance, segment.duration);
+            context.segment_function(
+                segment.source, segment.target, segment.distance, segment.duration);
             segment.weight = segment.duration; // back-compatibility fallback to duration
             break;
         }
@@ -643,16 +657,12 @@ void LuaScriptingContext::ProcessNode(const osmium::Node &node, ExtractionNode &
 {
     BOOST_ASSERT(state.lua_state() != nullptr);
 
-    sol::function node_function = state["node_function"];
-
     node_function(node, result);
 }
 
 void LuaScriptingContext::ProcessWay(const osmium::Way &way, ExtractionWay &result)
 {
     BOOST_ASSERT(state.lua_state() != nullptr);
-
-    sol::function way_function = state["way_function"];
 
     way_function(way, result);
 }

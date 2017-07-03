@@ -4,7 +4,6 @@ Feature: Weight tests
     Background:
         Given the profile "testbot"
         Given a grid size of 10 meters
-        Given the extract extra arguments "--generate-edge-lookup"
         Given the query options
             | geometries | geojson |
 
@@ -29,12 +28,12 @@ Feature: Weight tests
             | cde   |
 
         When I route I should get
-            | waypoints | route       | a:weight  |
-            | s,t       | abc,cde,cde | 1.1:2:2:1 |
+            | waypoints | route   | a:weight  |
+            | s,t       | abc,cde | 1.1:2:2:1 |
 
         When I route I should get
-            | waypoints | route       | times      | weight_name | weights |
-            | s,t       | abc,cde,cde | 3.1s,3s,0s | duration    | 3.1,3,0 |
+            | waypoints | route   | times   | weight_name | weights |
+            | s,t       | abc,cde | 6.1s,0s | duration    | 6.1,0   |
 
     # FIXME include/engine/guidance/assemble_geometry.hpp:95
     Scenario: Start and target on the same and adjacent edge
@@ -240,6 +239,7 @@ Feature: Weight tests
             | e,d       | ,,    | 40m +-.1 | 4.009,1.11,0 | 189.9s,100s,0s |
             | d,e       | ,,    | 40m +-.1 | 2.21,1.11,0  | 10.1s,100s,0s  |
 
+    @traffic @speed
     Scenario: Step weights -- segment_function with speed and turn updates
         Given the profile file "testbot" extended with
         """
@@ -279,13 +279,15 @@ Feature: Weight tests
             2,3,5,25.5,16.7
             """
         And the contract extra arguments "--segment-speed-file {speeds_file} --turn-penalty-file {penalties_file}"
+        And the customize extra arguments "--segment-speed-file {speeds_file} --turn-penalty-file {penalties_file}"
 
         When I route I should get
             | waypoints | route | distance | weights   | times        |
-            | a,d       | ,     | 59.9m    | 62,0      | 24s,0s       |
-            | a,e       | ,,    | 60.1m    | 68.7,10,0 | 38.5s,11s,0s |
+            | a,d       | ,     | 59.9m    | 20.5,0    | 24s,0s       |
+            | a,e       | ,,    | 60.1m    | 27.2,10,0 | 38.5s,11s,0s |
             | d,e       | ,,    | 39.9m    | 10,10,0   | 11s,11s,0s   |
 
+    @traffic @speed
     Scenario: Step weights -- segment_function with speed and turn updates with fallback to durations
         Given the profile file "testbot" extended with
         """
@@ -313,9 +315,10 @@ Feature: Weight tests
             2,3,5,1
             """
         And the contract extra arguments "--segment-speed-file {speeds_file} --turn-penalty-file {penalties_file}"
+        And the customize extra arguments "--segment-speed-file {speeds_file} --turn-penalty-file {penalties_file}"
 
         When I route I should get
             | waypoints | route      | distance | weights       | times    |
-            | a,d       | abcd,abcd  | 59.9m    | 6.993,0       | 7s,0s    |
-            | a,e       | abcd,ce,ce | 60.1m    | 6.002,2.002,0 | 6s,2s,0s |
+            | a,d       | abcd,abcd  | 59.9m    | 6.996,0       | 7s,0s    |
+            | a,e       | abcd,ce,ce | 60.1m    | 6.005,2.002,0 | 6s,2s,0s |
             | d,e       | abcd,ce,ce | 39.9m    | 1.991,2.002,0 | 2s,2s,0s |

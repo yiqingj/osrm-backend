@@ -15,7 +15,8 @@ module.exports = function () {
             '{profile_file}': this.profileFile,
             '{rastersource_file}': this.rasterCacheFile,
             '{speeds_file}': this.speedsCacheFile,
-            '{penalties_file}': this.penaltiesCacheFile
+            '{penalties_file}': this.penaltiesCacheFile,
+            '{timezone_names}': this.TIMEZONE_NAMES
         };
 
         for (let k in table) {
@@ -46,6 +47,10 @@ module.exports = function () {
         let child = child_process.execFile(cmd, opts, {maxBuffer: 1024 * 1024 * 1000, env: env}, callback);
         child.on('exit', function(code) {
             log.write(util.format('*** %s exited with code %d\n', bin, code));
+            // remove listeners and close log file -> some tail messages can be lost
+            child.stdout.removeListener('data', child.logFunc);
+            child.stderr.removeListener('data', child.logFunc);
+            log.end();
         }.bind(this));
         this.setupOutputLog(child, log);
         return child;

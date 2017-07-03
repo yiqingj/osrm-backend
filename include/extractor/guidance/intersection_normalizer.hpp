@@ -43,7 +43,7 @@ class IntersectionNormalizer
         std::vector<IntersectionNormalizationOperation> performed_merges;
     };
     IntersectionNormalizer(const util::NodeBasedDynamicGraph &node_based_graph,
-                           const std::vector<extractor::QueryNode> &node_coordinates,
+                           const std::vector<util::Coordinate> &node_coordinates,
                            const util::NameTable &name_table,
                            const SuffixTable &street_name_suffix_table,
                            const IntersectionGenerator &intersection_generator);
@@ -83,7 +83,8 @@ class IntersectionNormalizer
                                      const IntersectionShapeData &source) const;
     IntersectionShapeData MergeRoads(const IntersectionNormalizationOperation direction,
                                      const IntersectionShapeData &lhs,
-                                     const IntersectionShapeData &rhs) const;
+                                     const IntersectionShapeData &rhs,
+                                     const double opposite_bearing) const;
 
     // Merge segregated roads to omit invalid turns in favor of treating segregated roads as
     // one.

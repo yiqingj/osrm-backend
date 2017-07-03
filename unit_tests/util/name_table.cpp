@@ -1,6 +1,8 @@
 #include "util/name_table.hpp"
+#include "common/temporary_file.hpp"
 #include "util/exception.hpp"
 
+#include <boost/filesystem.hpp>
 #include <boost/test/test_case_template.hpp>
 #include <boost/test/unit_test.hpp>
 
@@ -19,7 +21,6 @@ using namespace osrm::util;
 
 std::string PrapareNameTableData(std::vector<std::string> &data, bool fill_all)
 {
-    std::stringstream sstr;
     NameTable::IndexedData indexed_data;
     std::vector<unsigned char> name_char_data;
     std::vector<std::uint32_t> name_offsets;
@@ -54,9 +55,19 @@ std::string PrapareNameTableData(std::vector<std::string> &data, bool fill_all)
     }
     name_offsets.push_back(name_char_data.size());
 
-    indexed_data.write(sstr, name_offsets.begin(), name_offsets.end(), name_char_data.begin());
+    TemporaryFile file;
+    {
+        storage::io::FileWriter writer(file.path, storage::io::FileWriter::HasNoFingerprint);
+        indexed_data.write(
+            writer, name_offsets.begin(), name_offsets.end(), name_char_data.begin());
+    }
 
-    return sstr.str();
+    storage::io::FileReader reader(file.path, storage::io::FileReader::HasNoFingerprint);
+    auto length = reader.GetSize();
+    std::string str(length, '\0');
+    reader.ReadInto(const_cast<char *>(str.data()), length);
+
+    return str;
 }
 
 BOOST_AUTO_TEST_CASE(check_name_table_fill)

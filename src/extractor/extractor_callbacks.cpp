@@ -35,11 +35,13 @@ namespace TurnLaneType = guidance::TurnLaneType;
 
 ExtractorCallbacks::ExtractorCallbacks(ExtractionContainers &extraction_containers_,
                                        const ProfileProperties &properties)
-    : external_memory(extraction_containers_), fallback_to_duration(properties.fallback_to_duration)
+    : external_memory(extraction_containers_),
+      fallback_to_duration(properties.fallback_to_duration),
+      force_split_edges(properties.force_split_edges)
 {
     // we reserved 0, 1, 2, 3 for the empty case
     string_map[MapKey("", "", "", "")] = 0;
-    lane_description_map[TurnLaneDescription()] = 0;
+    lane_description_map.data[TurnLaneDescription()] = 0;
 }
 
 /**
@@ -52,8 +54,8 @@ void ExtractorCallbacks::ProcessNode(const osmium::Node &input_node,
                                      const ExtractionNode &result_node)
 {
     external_memory.all_nodes_list.push_back(
-        {util::toFixed(util::FloatLongitude{input_node.location().lon()}),
-         util::toFixed(util::FloatLatitude{input_node.location().lat()}),
+        {util::toFixed(util::UnsafeFloatLongitude{input_node.location().lon()}),
+         util::toFixed(util::UnsafeFloatLatitude{input_node.location().lat()}),
          OSMNodeID{static_cast<std::uint64_t>(input_node.id())},
          result_node.barrier,
          result_node.traffic_lights});
@@ -249,18 +251,7 @@ void ExtractorCallbacks::ProcessWay(const osmium::Way &input_way, const Extracti
             return INVALID_LANE_DESCRIPTIONID;
         TurnLaneDescription lane_description = laneStringToDescription(std::move(lane_string));
 
-        const auto lane_description_itr = lane_description_map.find(lane_description);
-        if (lane_description_itr == lane_description_map.end())
-        {
-            const LaneDescriptionID new_id =
-                boost::numeric_cast<LaneDescriptionID>(lane_description_map.size());
-            lane_description_map[lane_description] = new_id;
-            return new_id;
-        }
-        else
-        {
-            return lane_description_itr->second;
-        }
+        return lane_description_map.ConcurrentFindOrAdd(lane_description);
     };
 
     // Deduplicates street names, refs, destinations, pronunciation based on the string_map.
@@ -323,14 +314,15 @@ void ExtractorCallbacks::ProcessWay(const osmium::Way &input_way, const Extracti
         (parsed_way.backward_travel_mode != TRAVEL_MODE_INACCESSIBLE);
 
     // split an edge into two edges if forwards/backwards behavior differ
-    const bool split_edge = in_forward_direction && in_backward_direction &&
-                            ((parsed_way.forward_rate != parsed_way.backward_rate) ||
-                             (parsed_way.forward_speed != parsed_way.backward_speed) ||
-                             (parsed_way.forward_travel_mode != parsed_way.backward_travel_mode) ||
-                             (turn_lane_id_forward != turn_lane_id_backward));
+    const bool split_edge =
+        in_forward_direction && in_backward_direction &&
+        (force_split_edges || (parsed_way.forward_rate != parsed_way.backward_rate) ||
+         (parsed_way.forward_speed != parsed_way.backward_speed) ||
+         (parsed_way.forward_travel_mode != parsed_way.backward_travel_mode) ||
+         (turn_lane_id_forward != turn_lane_id_backward));
 
     if (in_forward_direction)
-    {
+    { // add (forward) segments or (forward,backward) for non-split edges in backward direction
         util::for_each_pair(
             nodes.cbegin(),
             nodes.cend(),
@@ -355,8 +347,8 @@ void ExtractorCallbacks::ProcessWay(const osmium::Way &input_way, const Extracti
             });
     }
 
-    if (in_backward_direction || split_edge)
-    {
+    if (in_backward_direction && (!in_forward_direction || split_edge))
+    { // add (backward) segments for split edges or not in forward direction
         util::for_each_pair(
             nodes.cbegin(),
             nodes.cend(),

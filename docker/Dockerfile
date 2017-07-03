@@ -1,18 +1,53 @@
-FROM ubuntu:14.04
+FROM alpine:3.5
 
-RUN apt-get update -y && apt-get install -y  software-properties-common
-RUN add-apt-repository ppa:ubuntu-toolchain-r/test
-RUN apt-get update -y && apt-get install -y g++-5 libbz2-dev libstxxl-dev libstxxl1 libxml2-dev libzip-dev lua5.1 liblua5.1-0-dev libtbb-dev libgdal-dev libboost-all-dev ccache
-RUN apt-get -y install curl cmake cmake-curses-gui git
-
+RUN mkdir /opt
 WORKDIR /opt
-RUN git clone --depth 1 --branch v0.31.0 https://github.com/creationix/nvm.git
-RUN /bin/bash -c "source /opt/nvm/nvm.sh && nvm install v4"
 
-RUN useradd -ms /bin/bash mapbox
-USER mapbox
-ENV HOME /home/mapbox
-WORKDIR /home/mapbox
+RUN NPROC=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || 1) && \
+    echo "@testing http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
+    apk update && \
+    apk upgrade && \
+    apk add git cmake wget make libc-dev gcc g++ bzip2-dev boost-dev zlib-dev expat-dev lua5.1-dev libtbb@testing libtbb-dev@testing && \
+    \
+    echo "Building libstxxl" && \
+    cd /opt && \
+    git clone --depth 1 --branch 1.4.1 https://github.com/stxxl/stxxl.git && \
+    cd stxxl && \
+    mkdir build && \
+    cd build && \
+    cmake -DCMAKE_BUILD_TYPE=Release .. && \
+    make -j${NPROC} && \
+    make install
 
-RUN echo "source /opt/nvm/nvm.sh" > .bashrc
-RUN echo "source /home/mapbox/.bashrc" > .profile
+ARG DOCKER_TAG
+RUN mkdir /src
+COPY . /src
+WORKDIR /src
+
+RUN NPROC=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || 1) && \
+    echo "Building OSRM ${DOCKER_TAG}" && \
+    git show --format="%H" | head -n1 > /opt/OSRM_GITSHA && \
+    echo "Building OSRM gitsha $(cat /opt/OSRM_GITSHA)" && \
+    mkdir build && \
+    cd build && \
+    BUILD_TYPE="Release" && \
+    ENABLE_ASSERTIONS="Off" && \
+    BUILD_TOOLS="Off" && \
+    case ${DOCKER_TAG} in *"-debug"*) BUILD_TYPE="Debug";; esac && \
+    case ${DOCKER_TAG} in *"-assertions"*) BUILD_TYPE="RelWithDebInfo" && ENABLE_ASSERTIONS="On" && BUILD_TOOLS="On";; esac && \
+    echo "Building ${BUILD_TYPE} with ENABLE_ASSERTIONS=${ENABLE_ASSERTIONS} BUILD_TOOLS=${BUILD_TOOLS}" && \
+    cmake .. -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DENABLE_ASSERTIONS=${ENABLE_ASSERTIONS} -DBUILD_TOOLS=${BUILD_TOOLS} -DENABLE_LTO=On && \
+    make -j${NPROC} install && \
+    cd ../profiles && \
+    cp -r * /opt && \
+    \
+    echo "Cleaning up" && \
+    strip /usr/local/bin/* && \
+    rm /usr/local/lib/libstxxl* && \
+    cd /opt && \
+    apk del boost-dev && \
+    apk del g++ cmake libc-dev expat-dev zlib-dev bzip2-dev lua5.1-dev git make gcc && \
+    apk add boost-filesystem boost-program_options boost-regex boost-iostreams boost-thread libgomp lua5.1 expat && \
+    rm -rf /src /opt/stxxl /usr/local/bin/stxxl_tool /usr/local/lib/libosrm*
+
+EXPOSE 5000

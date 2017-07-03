@@ -31,11 +31,11 @@ inline bool requiresAnnouncement(const EdgeData &from, const EdgeData &to)
 }
 
 IntersectionHandler::IntersectionHandler(const util::NodeBasedDynamicGraph &node_based_graph,
-                                         const std::vector<QueryNode> &node_info_list,
+                                         const std::vector<util::Coordinate> &coordinates,
                                          const util::NameTable &name_table,
                                          const SuffixTable &street_name_suffix_table,
                                          const IntersectionGenerator &intersection_generator)
-    : node_based_graph(node_based_graph), node_info_list(node_info_list), name_table(name_table),
+    : node_based_graph(node_based_graph), coordinates(coordinates), name_table(name_table),
       street_name_suffix_table(street_name_suffix_table),
       intersection_generator(intersection_generator),
       graph_walker(node_based_graph, intersection_generator)
@@ -85,7 +85,7 @@ TurnInstruction IntersectionHandler::getInstructionForObvious(const std::size_t 
 
     if (angularDeviation(road.angle, 0) < 0.01)
     {
-        return {TurnType::Turn, DirectionModifier::UTurn};
+        return {TurnType::Continue, DirectionModifier::UTurn};
     }
     if (type == TurnType::Turn)
     {
@@ -127,8 +127,8 @@ TurnInstruction IntersectionHandler::getInstructionForObvious(const std::size_t 
                     // or actually follow the full road. When 2399 lands, we can exchange here for a
                     // precalculated distance value.
                     const auto distance = util::coordinate_calculation::haversineDistance(
-                        node_info_list[node_based_graph.GetTarget(via_edge)],
-                        node_info_list[node_based_graph.GetTarget(road.eid)]);
+                        coordinates[node_based_graph.GetTarget(via_edge)],
+                        coordinates[node_based_graph.GetTarget(road.eid)]);
                     return {
                         TurnType::Turn,
                         (angularDeviation(road.angle, STRAIGHT_ANGLE) < FUZZY_ANGLE_DIFFERENCE ||
@@ -146,8 +146,11 @@ TurnInstruction IntersectionHandler::getInstructionForObvious(const std::size_t 
         // name has not changed, suppress a turn here or indicate mode change
         else
         {
-            return {in_mode == out_mode ? TurnType::Suppressed : TurnType::Notification,
-                    getTurnDirection(road.angle)};
+            if (in_mode != out_mode)
+                return {TurnType::Notification, getTurnDirection(road.angle)};
+            else
+                return {num_roads == 2 ? TurnType::NoTurn : TurnType::Suppressed,
+                        getTurnDirection(road.angle)};
         }
     }
     BOOST_ASSERT(type == TurnType::Continue);
@@ -275,7 +278,7 @@ void IntersectionHandler::assignFork(const EdgeID via_edge,
 
     // right side of fork
     if (low_priority_left && !low_priority_right)
-        right.instruction = {suppressed_right_type, DirectionModifier::SlightLeft};
+        right.instruction = {suppressed_right_type, DirectionModifier::SlightRight};
     else
     {
         if (low_priority_right && !low_priority_left)
@@ -431,6 +434,19 @@ IntersectionHandler::getNextIntersection(const NodeID at, const EdgeID via) cons
 
     return boost::make_optional(
         IntersectionViewAndNode{std::move(intersection), intersection_node});
+}
+
+bool IntersectionHandler::isSameName(const EdgeID source_edge_id, const EdgeID target_edge_id) const
+{
+    const auto &source_edge_data = node_based_graph.GetEdgeData(source_edge_id);
+    const auto &target_edge_data = node_based_graph.GetEdgeData(target_edge_id);
+
+    return source_edge_data.name_id != EMPTY_NAMEID && //
+           target_edge_data.name_id != EMPTY_NAMEID && //
+           !util::guidance::requiresNameAnnounced(source_edge_data.name_id,
+                                                  target_edge_data.name_id,
+                                                  name_table,
+                                                  street_name_suffix_table); //
 }
 
 } // namespace guidance

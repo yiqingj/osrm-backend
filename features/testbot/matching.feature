@@ -4,7 +4,6 @@ Feature: Basic Map Matching
     Background:
         Given the profile "testbot"
         Given a grid size of 10 meters
-        Given the extract extra arguments "--generate-edge-lookup"
         Given the query options
             | geometries | geojson |
 
@@ -39,6 +38,84 @@ Feature: Basic Map Matching
         When I match I should get
             | trace | timestamps | matchings |
             | abcd  | 0 1 62 63  | ab,cd     |
+
+    Scenario: Testbot - Map matching with trace splitting suppression
+        Given the query options
+            | gaps | ignore |
+
+        Given the node map
+            """
+            a b c d
+                e
+            """
+
+        And the ways
+            | nodes | oneway |
+            | abcd  | no     |
+
+        When I match I should get
+            | trace | timestamps | matchings |
+            | abcd  | 0 1 62 63  | abcd      |
+
+    Scenario: Testbot - Map matching with trace tidying. Clean case.
+        Given a grid size of 100 meters
+
+        Given the query options
+            | tidy | true |
+
+        Given the node map
+            """
+            a b c d
+                e
+            """
+
+        And the ways
+            | nodes | oneway |
+            | abcd  | no     |
+
+        When I match I should get
+            | trace | timestamps | matchings |
+            | abcd | 0 10 20 30  | abcd      |
+
+    Scenario: Testbot - Map matching with trace tidying. Dirty case by ts.
+        Given a grid size of 100 meters
+
+        Given the query options
+            | tidy | true |
+
+        Given the node map
+            """
+            a b c d
+                e
+            """
+
+        And the ways
+            | nodes | oneway |
+            | abcd  | no     |
+
+        When I match I should get
+            | trace | timestamps    | matchings |
+            | abacd | 0 10 12 20 30 | abcd      |
+
+    Scenario: Testbot - Map matching with trace tidying. Dirty case by dist.
+        Given a grid size of 8 meters
+
+        Given the query options
+            | tidy | true |
+
+        Given the node map
+            """
+            a q b c d
+                e
+            """
+
+        And the ways
+            | nodes | oneway |
+            | aqbcd | no     |
+
+        When I match I should get
+            | trace | matchings |
+            | abcbd | abbd      |
 
     Scenario: Testbot - Map matching with core factor
         Given the contract extra arguments "--core 0.8"
@@ -135,10 +212,11 @@ Feature: Basic Map Matching
 
         And the speed file
         """
-        1,2,36
+        1,2,36,10
         """
 
         And the contract extra arguments "--segment-speed-file {speeds_file}"
+        And the customize extra arguments "--segment-speed-file {speeds_file}"
 
         When I match I should get
             | trace | matchings | a:duration       |
@@ -161,10 +239,11 @@ Feature: Basic Map Matching
 
         And the speed file
         """
-        1,2,36
+        1,2,36,10
         """
 
         And the contract extra arguments "--segment-speed-file {speeds_file}"
+        And the customize extra arguments "--segment-speed-file {speeds_file}"
 
         When I match I should get
             | trace | matchings | a:duration      |
@@ -263,8 +342,24 @@ Feature: Basic Map Matching
             | trace | matchings | geometry                                |
             | abd   | abd       | 1,1,1,1.00009,1,1.00009,0.99991,1.00009 |
 
-    Scenario: Testbot - Speed greater than speed threshhold
-        Given a grid size of 10 meters
+    Scenario: Testbot - Matching alternatives count test
+        Given the node map
+            """
+            a b c d e f
+                  g h i
+            """
+
+        And the ways
+            | nodes  | oneway |
+            | abcdef | yes    |
+            | dghi   | yes    |
+
+        When I match I should get
+            | trace  | matchings | alternatives         |
+            | abcdef | abcde     | 0,0,0,0,1,1          |
+
+    Scenario: Testbot - Speed greater than speed threshold
+        Given a grid size of 100 meters
         Given the query options
             | geometries | geojson  |
 
@@ -284,8 +379,8 @@ Feature: Basic Map Matching
             | trace | timestamps | matchings |
             | abcd  | 0 1 2 3    | ab,cd     |
 
-    Scenario: Testbot - Speed less than speed threshhold
-        Given a grid size of 10 meters
+    Scenario: Testbot - Speed less than speed threshold
+        Given a grid size of 100 meters
         Given the query options
             | geometries | geojson  |
 
@@ -301,6 +396,28 @@ Feature: Basic Map Matching
         When I match I should get
             | trace | timestamps | matchings |
             | abcd  | 0 1 2 3    | abcd      |
+
+    Scenario: Testbot - Huge gap in the coordinates
+        Given a grid size of 100 meters
+        Given the query options
+            | geometries | geojson  |
+            | gaps | ignore |
+
+        Given the node map
+            """
+            a b c d ---- x
+                         |
+                         |
+                         y ---- z ---- efjk
+            """
+
+        And the ways
+            | nodes   | oneway |
+            | abcdxyzefjk  | no     |
+
+        When I match I should get
+            | trace     | timestamps           | matchings  |
+            | abcdefjk  | 0 1 2 3 50 51 52 53  | abcdefjk   |
 
     # Regression test 1 for issue 3176
     Scenario: Testbot - multiple segments: properly expose OSM IDs

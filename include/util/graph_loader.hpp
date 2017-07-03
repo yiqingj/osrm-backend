@@ -3,12 +3,14 @@
 
 #include "extractor/external_memory_node.hpp"
 #include "extractor/node_based_edge.hpp"
+#include "extractor/packed_osm_ids.hpp"
 #include "extractor/query_node.hpp"
 #include "extractor/restriction.hpp"
 #include "storage/io.hpp"
 #include "util/exception.hpp"
 #include "util/fingerprint.hpp"
 #include "util/log.hpp"
+#include "util/packed_vector.hpp"
 #include "util/typedefs.hpp"
 
 #include <boost/assert.hpp>
@@ -30,24 +32,6 @@ namespace util
 {
 
 /**
- * Reads the .restrictions file and loads it to a vector.
- * The since the restrictions reference nodes using their external node id,
- * we need to renumber it to the new internal id.
-*/
-inline unsigned loadRestrictionsFromFile(storage::io::FileReader &file_reader,
-                                         std::vector<extractor::TurnRestriction> &restriction_list)
-{
-    unsigned number_of_usable_restrictions = file_reader.ReadElementCount32();
-    restriction_list.resize(number_of_usable_restrictions);
-    if (number_of_usable_restrictions > 0)
-    {
-        file_reader.ReadInto(restriction_list.data(), number_of_usable_restrictions);
-    }
-
-    return number_of_usable_restrictions;
-}
-
-/**
  * Reads the beginning of an .osrm file and produces:
  *  - barrier nodes
  *  - traffic lights
@@ -57,21 +41,23 @@ template <typename BarrierOutIter, typename TrafficSignalsOutIter>
 NodeID loadNodesFromFile(storage::io::FileReader &file_reader,
                          BarrierOutIter barriers,
                          TrafficSignalsOutIter traffic_signals,
-                         std::vector<extractor::QueryNode> &node_array)
+                         std::vector<util::Coordinate> &coordinates,
+                         extractor::PackedOSMIDs &osm_node_ids)
 {
-    NodeID number_of_nodes = file_reader.ReadElementCount32();
+    auto number_of_nodes = file_reader.ReadElementCount64();
     Log() << "Importing number_of_nodes new = " << number_of_nodes << " nodes ";
 
-    node_array.resize(number_of_nodes);
+    coordinates.resize(number_of_nodes);
+    osm_node_ids.reserve(number_of_nodes);
 
     extractor::ExternalMemoryNode current_node;
     for (NodeID i = 0; i < number_of_nodes; ++i)
     {
         file_reader.ReadInto(&current_node, 1);
 
-        node_array[i].lon = current_node.lon;
-        node_array[i].lat = current_node.lat;
-        node_array[i].node_id = current_node.node_id;
+        coordinates[i].lon = current_node.lon;
+        coordinates[i].lat = current_node.lat;
+        osm_node_ids.push_back(current_node.node_id);
 
         if (current_node.barrier)
         {
@@ -95,8 +81,7 @@ NodeID loadNodesFromFile(storage::io::FileReader &file_reader,
 inline NodeID loadEdgesFromFile(storage::io::FileReader &file_reader,
                                 std::vector<extractor::NodeBasedEdge> &edge_list)
 {
-    EdgeID number_of_edges = file_reader.ReadElementCount32();
-    BOOST_ASSERT(sizeof(EdgeID) == sizeof(number_of_edges));
+    auto number_of_edges = file_reader.ReadElementCount64();
 
     edge_list.resize(number_of_edges);
     Log() << " and " << number_of_edges << " edges ";

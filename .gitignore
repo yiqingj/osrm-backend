@@ -7,6 +7,8 @@
 #############################
 osrm-deps
 
+.ycm_extra_conf.py
+
 # Compiled source #
 ###################
 *.com
@@ -47,6 +49,9 @@ Thumbs.db
 /build/
 /example/build/
 /test/data/monaco*
+/test/data/ch
+/test/data/corech
+/test/data/mld
 /cmake/postinst
 
 # Eclipse related files #
@@ -55,6 +60,11 @@ Thumbs.db
 .scb
 .cproject
 .project
+
+# Visual Studio (Code) related files #
+######################################
+/.vs*
+/*.local.bat
 
 # stxxl related files #
 #######################
@@ -86,7 +96,6 @@ stxxl.errlog
 /test/cache
 /test/speeds.csv
 /test/penalties.csv
-/test/data/monaco.*
 node_modules
 
 # Deprecated config file #
@@ -97,3 +106,6 @@ node_modules
 
 # local lua debugging file
 debug.lua
+
+# node-osrm artifacts
+lib/binding

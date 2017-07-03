@@ -134,11 +134,29 @@ IF %ERRORLEVEL% NEQ 0 GOTO ERROR
 
 ECHO running library-tests.exe ...
 SET test_region=monaco
+SET test_region_ch=ch\monaco
+SET test_region_corech=corech\monaco
+SET test_region_mld=mld\monaco
 SET test_osm=%test_region%.osm.pbf
 IF NOT EXIST %test_osm% powershell Invoke-WebRequest https://s3.amazonaws.com/mapbox/osrm/testing/monaco.osm.pbf -OutFile %test_osm%
 %Configuration%\osrm-extract.exe -p ../profiles/car.lua %test_osm%
-%Configuration%\osrm-contract.exe %test_region%.osrm
-unit_tests\%Configuration%\library-tests.exe %test_region%.osrm
+MKDIR ch
+XCOPY %test_region%.osrm.* ch\
+XCOPY %test_region%.osrm ch\
+MKDIR corech
+XCOPY %test_region%.osrm.* corech\
+XCOPY %test_region%.osrm corech\
+MKDIR mld
+XCOPY %test_region%.osrm.* mld\
+XCOPY %test_region%.osrm mld\
+%Configuration%\osrm-contract.exe %test_region_ch%.osrm
+%Configuration%\osrm-contract.exe --core 0.8 %test_region_corech%.osrm
+%Configuration%\osrm-partition.exe %test_region_mld%.osrm
+%Configuration%\osrm-customize.exe %test_region_mld%.osrm
+XCOPY /Y ch\*.* ..\test\data\ch\
+XCOPY /Y corech\*.* ..\test\data\corech\
+XCOPY /Y mld\*.* ..\test\data\mld\
+unit_tests\%Configuration%\library-tests.exe
 
 IF NOT "%APPVEYOR_REPO_BRANCH%"=="master" GOTO DONE
 ECHO ========= CREATING PACKAGES ==========

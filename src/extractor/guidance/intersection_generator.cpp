@@ -3,6 +3,7 @@
 #include "extractor/geojson_debug_policies.hpp"
 #include "util/geojson_debug_logger.hpp"
 
+#include "util/assert.hpp"
 #include "util/bearing.hpp"
 #include "util/coordinate_calculation.hpp"
 #include "util/log.hpp"
@@ -33,11 +34,11 @@ IntersectionGenerator::IntersectionGenerator(
     const util::NodeBasedDynamicGraph &node_based_graph,
     const RestrictionMap &restriction_map,
     const std::unordered_set<NodeID> &barrier_nodes,
-    const std::vector<QueryNode> &node_info_list,
+    const std::vector<util::Coordinate> &coordinates,
     const CompressedEdgeContainer &compressed_edge_container)
     : node_based_graph(node_based_graph), restriction_map(restriction_map),
-      barrier_nodes(barrier_nodes), node_info_list(node_info_list),
-      coordinate_extractor(node_based_graph, compressed_edge_container, node_info_list)
+      barrier_nodes(barrier_nodes), coordinates(coordinates),
+      coordinate_extractor(node_based_graph, compressed_edge_container, coordinates)
 {
 }
 
@@ -56,7 +57,7 @@ IntersectionGenerator::ComputeIntersectionShape(const NodeID node_at_center_of_i
     // reserve enough items (+ the possibly missing u-turn edge)
     const auto intersection_degree = node_based_graph.GetOutDegree(node_at_center_of_intersection);
     intersection.reserve(intersection_degree);
-    const util::Coordinate turn_coordinate = node_info_list[node_at_center_of_intersection];
+    const util::Coordinate turn_coordinate = coordinates[node_at_center_of_intersection];
 
     // number of lanes at the intersection changes how far we look down the road
     const auto edge_range = node_based_graph.GetAdjacentEdgeRange(node_at_center_of_intersection);
@@ -144,6 +145,7 @@ IntersectionGenerator::ComputeIntersectionShape(const NodeID node_at_center_of_i
                   intersection.end(),
                   makeCompareShapeDataAngleToBearing(base_bearing));
     }
+
     return intersection;
 }
 
@@ -278,7 +280,8 @@ IntersectionView IntersectionGenerator::TransformIntersectionShapeIntoView(
     };
 
     // due to merging of roads, the u-turn might actually not be part of the intersection anymore
-    const auto uturn_bearing = [&]() {
+    // uturn is a pair of {edge id, bearing}
+    const auto uturn = [&]() {
         const auto merge_entry = std::find_if(
             performed_merges.begin(), performed_merges.end(), [&uturn_edge_itr](const auto entry) {
                 return entry.merged_eid == uturn_edge_itr->eid;
@@ -291,7 +294,8 @@ IntersectionView IntersectionGenerator::TransformIntersectionShapeIntoView(
                 normalized_intersection.end(),
                 [&](const IntersectionShapeData &road) { return road.eid == merged_into_id; });
             BOOST_ASSERT(merged_u_turn != normalized_intersection.end());
-            return util::bearing::reverse(merged_u_turn->bearing);
+            return std::make_pair(merged_u_turn->eid,
+                                  util::bearing::reverse(merged_u_turn->bearing));
         }
         else
         {
@@ -301,7 +305,9 @@ IntersectionView IntersectionGenerator::TransformIntersectionShapeIntoView(
                              connect_to_previous_node);
             BOOST_ASSERT(uturn_edge_at_normalized_intersection_itr !=
                          normalized_intersection.end());
-            return util::bearing::reverse(uturn_edge_at_normalized_intersection_itr->bearing);
+            return std::make_pair(
+                uturn_edge_at_normalized_intersection_itr->eid,
+                util::bearing::reverse(uturn_edge_at_normalized_intersection_itr->bearing));
         }
     }();
 
@@ -314,7 +320,7 @@ IntersectionView IntersectionGenerator::TransformIntersectionShapeIntoView(
                        return IntersectionViewData(
                            road,
                            is_allowed_turn(road),
-                           util::bearing::angleBetween(uturn_bearing, road.bearing));
+                           util::bearing::angleBetween(uturn.second, road.bearing));
                    });
 
     const auto uturn_edge_at_intersection_view_itr =
@@ -369,8 +375,22 @@ IntersectionView IntersectionGenerator::TransformIntersectionShapeIntoView(
               std::end(intersection_view),
               std::mem_fn(&IntersectionViewData::CompareByAngle));
 
-    BOOST_ASSERT(intersection_view[0].angle >= 0. &&
-                 intersection_view[0].angle < std::numeric_limits<double>::epsilon());
+    // Move entering_via_edge to intersection front and place all roads prior entering_via_edge
+    // at the end of the intersection view with 360° angle
+    auto entering_via_it = std::find_if(intersection_view.begin(),
+                                        intersection_view.end(),
+                                        [&uturn](auto &road) { return road.eid == uturn.first; });
+
+    OSRM_ASSERT(entering_via_it != intersection_view.end() && entering_via_it->angle >= 0. &&
+                    entering_via_it->angle < std::numeric_limits<double>::epsilon(),
+                coordinates[node_at_intersection]);
+
+    if (entering_via_it != intersection_view.begin() && entering_via_it != intersection_view.end())
+    {
+        std::for_each(
+            intersection_view.begin(), entering_via_it, [](auto &road) { road.angle = 360.; });
+        std::rotate(intersection_view.begin(), entering_via_it, intersection_view.end());
+    }
 
     return intersection_view;
 }

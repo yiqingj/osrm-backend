@@ -46,8 +46,9 @@ module.exports = function () {
         return waypoints.map(w => [w.lon, w.lat].map(ensureDecimal).join(','));
     };
 
-    this.requestRoute = (waypoints, bearings, userParams, callback) => {
+    this.requestRoute = (waypoints, bearings, approaches, userParams, callback) => {
         if (bearings.length && bearings.length !== waypoints.length) throw new Error('*** number of bearings does not equal the number of waypoints');
+        if (approaches.length && approaches.length !== waypoints.length) throw new Error('*** number of approaches does not equal the number of waypoints');
 
         var defaults = {
                 output: 'json',
@@ -67,6 +68,9 @@ module.exports = function () {
             }).join(';');
         }
 
+        if (approaches.length) {
+            params.approaches = approaches.join(';');
+        }
         return this.requestPath('route', params, callback);
     };
 
@@ -163,6 +167,10 @@ module.exports = function () {
                                                               ('out' in s.intersections[0] ? s.intersections[0].bearings[s.intersections[0].out] : 0));
     };
 
+    this.approachList = (instructions) => {
+        return this.extractInstructionList(instructions, s => s.approaches || '');
+    };
+
     this.annotationList = (instructions) => {
         if (!('annotation' in instructions.legs[0]))
             return '';
@@ -178,6 +186,11 @@ module.exports = function () {
             merged[a] = merged[a].join(',');
         });
         return merged;
+    };
+
+    this.alternativesList = (instructions) => {
+        // alternatives_count come from tracepoints list
+        return instructions.tracepoints.map(t => t.alternatives_count.toString()).join(',');
     };
 
     this.lanesList = (instructions) => {

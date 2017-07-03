@@ -111,15 +111,15 @@ struct BaseParametersGrammar : boost::spirit::qi::grammar<Iterator, Signature>
                                                 qi::_1,
                                                 qi::_2)];
 
-        location_rule =
-            (double_ > qi::lit(',') >
-             double_)[qi::_val = ph::bind(
-                          [](double lon, double lat) {
-                              return util::Coordinate(util::toFixed(util::FloatLongitude{lon}),
-                                                      util::toFixed(util::FloatLatitude{lat}));
-                          },
-                          qi::_1,
-                          qi::_2)];
+        location_rule = (double_ > qi::lit(',') >
+                         double_)[qi::_val = ph::bind(
+                                      [](double lon, double lat) {
+                                          return util::Coordinate(
+                                              util::toFixed(util::UnsafeFloatLongitude{lon}),
+                                              util::toFixed(util::UnsafeFloatLatitude{lat}));
+                                      },
+                                      qi::_1,
+                                      qi::_2)];
 
         polyline_rule = qi::as_string[qi::lit("polyline(") > +polyline_chars > ')']
                                      [qi::_val = ph::bind(
@@ -128,9 +128,16 @@ struct BaseParametersGrammar : boost::spirit::qi::grammar<Iterator, Signature>
                                           },
                                           qi::_1)];
 
+        polyline6_rule = qi::as_string[qi::lit("polyline6(") > +polyline_chars > ')']
+                                      [qi::_val = ph::bind(
+                                           [](const std::string &polyline) {
+                                               return engine::decodePolyline<1000000>(polyline);
+                                           },
+                                           qi::_1)];
+
         query_rule =
-            ((location_rule % ';') |
-             polyline_rule)[ph::bind(&engine::api::BaseParameters::coordinates, qi::_r1) = qi::_1];
+            ((location_rule % ';') | polyline_rule |
+             polyline6_rule)[ph::bind(&engine::api::BaseParameters::coordinates, qi::_r1) = qi::_1];
 
         radiuses_rule = qi::lit("radiuses=") >
                         (-(qi::double_ | unlimited_rule) %
@@ -149,10 +156,16 @@ struct BaseParametersGrammar : boost::spirit::qi::grammar<Iterator, Signature>
             qi::lit("bearings=") >
             (-(qi::short_ > ',' > qi::short_))[ph::bind(add_bearing, qi::_r1, qi::_1)] % ';';
 
+        approach_type.add("unrestricted", engine::Approach::UNRESTRICTED)("curb",
+                                                                          engine::Approach::CURB);
+        approach_rule = qi::lit("approaches=") >
+                        (-approach_type %
+                         ';')[ph::bind(&engine::api::BaseParameters::approaches, qi::_r1) = qi::_1];
+
         base_rule = radiuses_rule(qi::_r1)   //
                     | hints_rule(qi::_r1)    //
                     | bearings_rule(qi::_r1) //
-                    | generate_hints_rule(qi::_r1);
+                    | generate_hints_rule(qi::_r1) | approach_rule(qi::_r1);
     }
 
   protected:
@@ -165,15 +178,19 @@ struct BaseParametersGrammar : boost::spirit::qi::grammar<Iterator, Signature>
     qi::rule<Iterator, Signature> hints_rule;
 
     qi::rule<Iterator, Signature> generate_hints_rule;
+    qi::rule<Iterator, Signature> approach_rule;
 
     qi::rule<Iterator, osrm::engine::Bearing()> bearing_rule;
     qi::rule<Iterator, osrm::util::Coordinate()> location_rule;
     qi::rule<Iterator, std::vector<osrm::util::Coordinate>()> polyline_rule;
+    qi::rule<Iterator, std::vector<osrm::util::Coordinate>()> polyline6_rule;
 
     qi::rule<Iterator, unsigned char()> base64_char;
     qi::rule<Iterator, std::string()> polyline_chars;
     qi::rule<Iterator, double()> unlimited_rule;
     qi::real_parser<double, json_policy> double_;
+
+    qi::symbols<char, engine::Approach> approach_type;
 };
 }
 }

@@ -1,21 +1,21 @@
 #include "engine/search_engine_data.hpp"
 
-#include "util/binary_heap.hpp"
-
 namespace osrm
 {
 namespace engine
 {
 
-SearchEngineData::SearchEngineHeapPtr SearchEngineData::forward_heap_1;
-SearchEngineData::SearchEngineHeapPtr SearchEngineData::reverse_heap_1;
-SearchEngineData::SearchEngineHeapPtr SearchEngineData::forward_heap_2;
-SearchEngineData::SearchEngineHeapPtr SearchEngineData::reverse_heap_2;
-SearchEngineData::SearchEngineHeapPtr SearchEngineData::forward_heap_3;
-SearchEngineData::SearchEngineHeapPtr SearchEngineData::reverse_heap_3;
-SearchEngineData::ManyToManyHeapPtr SearchEngineData::many_to_many_heap;
+// CH heaps
+using CH = routing_algorithms::ch::Algorithm;
+SearchEngineData<CH>::SearchEngineHeapPtr SearchEngineData<CH>::forward_heap_1;
+SearchEngineData<CH>::SearchEngineHeapPtr SearchEngineData<CH>::reverse_heap_1;
+SearchEngineData<CH>::SearchEngineHeapPtr SearchEngineData<CH>::forward_heap_2;
+SearchEngineData<CH>::SearchEngineHeapPtr SearchEngineData<CH>::reverse_heap_2;
+SearchEngineData<CH>::SearchEngineHeapPtr SearchEngineData<CH>::forward_heap_3;
+SearchEngineData<CH>::SearchEngineHeapPtr SearchEngineData<CH>::reverse_heap_3;
+SearchEngineData<CH>::ManyToManyHeapPtr SearchEngineData<CH>::many_to_many_heap;
 
-void SearchEngineData::InitializeOrClearFirstThreadLocalStorage(const unsigned number_of_nodes)
+void SearchEngineData<CH>::InitializeOrClearFirstThreadLocalStorage(unsigned number_of_nodes)
 {
     if (forward_heap_1.get())
     {
@@ -36,7 +36,7 @@ void SearchEngineData::InitializeOrClearFirstThreadLocalStorage(const unsigned n
     }
 }
 
-void SearchEngineData::InitializeOrClearSecondThreadLocalStorage(const unsigned number_of_nodes)
+void SearchEngineData<CH>::InitializeOrClearSecondThreadLocalStorage(unsigned number_of_nodes)
 {
     if (forward_heap_2.get())
     {
@@ -57,7 +57,7 @@ void SearchEngineData::InitializeOrClearSecondThreadLocalStorage(const unsigned 
     }
 }
 
-void SearchEngineData::InitializeOrClearThirdThreadLocalStorage(const unsigned number_of_nodes)
+void SearchEngineData<CH>::InitializeOrClearThirdThreadLocalStorage(unsigned number_of_nodes)
 {
     if (forward_heap_3.get())
     {
@@ -78,7 +78,46 @@ void SearchEngineData::InitializeOrClearThirdThreadLocalStorage(const unsigned n
     }
 }
 
-void SearchEngineData::InitializeOrClearManyToManyThreadLocalStorage(const unsigned number_of_nodes)
+void SearchEngineData<CH>::InitializeOrClearManyToManyThreadLocalStorage(unsigned number_of_nodes)
+{
+    if (many_to_many_heap.get())
+    {
+        many_to_many_heap->Clear();
+    }
+    else
+    {
+        many_to_many_heap.reset(new ManyToManyQueryHeap(number_of_nodes));
+    }
+}
+
+// MLD
+using MLD = routing_algorithms::mld::Algorithm;
+SearchEngineData<MLD>::SearchEngineHeapPtr SearchEngineData<MLD>::forward_heap_1;
+SearchEngineData<MLD>::SearchEngineHeapPtr SearchEngineData<MLD>::reverse_heap_1;
+SearchEngineData<MLD>::ManyToManyHeapPtr SearchEngineData<MLD>::many_to_many_heap;
+
+void SearchEngineData<MLD>::InitializeOrClearFirstThreadLocalStorage(unsigned number_of_nodes)
+{
+    if (forward_heap_1.get())
+    {
+        forward_heap_1->Clear();
+    }
+    else
+    {
+        forward_heap_1.reset(new QueryHeap(number_of_nodes));
+    }
+
+    if (reverse_heap_1.get())
+    {
+        reverse_heap_1->Clear();
+    }
+    else
+    {
+        reverse_heap_1.reset(new QueryHeap(number_of_nodes));
+    }
+}
+
+void SearchEngineData<MLD>::InitializeOrClearManyToManyThreadLocalStorage(unsigned number_of_nodes)
 {
     if (many_to_many_heap.get())
     {

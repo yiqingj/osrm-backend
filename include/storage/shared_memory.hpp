@@ -25,6 +25,8 @@
 #include <exception>
 #include <thread>
 
+#include "storage/shared_memory_ownership.hpp"
+
 namespace osrm
 {
 namespace storage
@@ -151,7 +153,7 @@ class SharedMemory
 #else
     void WaitForDetach()
     {
-        util::Log(logWARNING)
+        util::Log(logDEBUG)
             << "Shared memory support for non-Linux systems does not wait for clients to "
                "dettach. Going to sleep for 50ms.";
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -245,8 +247,8 @@ class SharedMemory
     void WaitForDetach()
     {
         // FIXME this needs an implementation for Windows
-        util::Log(logWARNING) << "Shared memory support for Windows does not wait for clients to "
-                                 "dettach. Going to sleep for 50ms.";
+        util::Log(logDEBUG) << "Shared memory support for Windows does not wait for clients to "
+                               "dettach. Going to sleep for 50ms.";
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 

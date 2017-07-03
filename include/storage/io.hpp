@@ -1,6 +1,8 @@
 #ifndef OSRM_STORAGE_IO_HPP_
 #define OSRM_STORAGE_IO_HPP_
 
+#include "osrm/error_codes.hpp"
+
 #include "util/exception.hpp"
 #include "util/exception_utils.hpp"
 #include "util/fingerprint.hpp"
@@ -10,6 +12,8 @@
 #include <boost/filesystem/fstream.hpp>
 #include <boost/iostreams/seek.hpp>
 
+#include <cerrno>
+#include <cstring>
 #include <cstring>
 #include <tuple>
 #include <type_traits>
@@ -23,10 +27,6 @@ namespace io
 
 class FileReader
 {
-  private:
-    const boost::filesystem::path filepath;
-    boost::filesystem::ifstream input_stream;
-
   public:
     class LineWrapper : public std::string
     {
@@ -43,21 +43,26 @@ class FileReader
         VerifyFingerprint,
         HasNoFingerprint
     };
+
     FileReader(const std::string &filename, const FingerprintFlag flag)
         : FileReader(boost::filesystem::path(filename), flag)
     {
     }
 
     FileReader(const boost::filesystem::path &filepath_, const FingerprintFlag flag)
-        : filepath(filepath_)
+        : filepath(filepath_), fingerprint(flag)
     {
         input_stream.open(filepath, std::ios::binary);
+
+        // Note: filepath.string() is wrapped in std::string() because it can
+        // return char * on some platforms, which makes the + operator not work
         if (!input_stream)
-            throw util::exception("Error opening " + filepath.string());
+            throw util::RuntimeError(
+                filepath.string(), ErrorCode::FileOpenError, SOURCE_REF, std::strerror(errno));
 
         if (flag == VerifyFingerprint && !ReadAndCheckFingerprint())
         {
-            throw util::exception("Fingerprint mismatch in " + filepath_.string() + SOURCE_REF);
+            throw util::RuntimeError(filepath.string(), ErrorCode::InvalidFingerprint, SOURCE_REF);
         }
     }
 
@@ -69,18 +74,31 @@ class FileReader
 
         if (file_size == boost::filesystem::ifstream::pos_type(-1))
         {
-            throw util::exception("File size for " + filepath.string() + " failed " + SOURCE_REF);
+            throw util::RuntimeError("Unable to determine file size for " +
+                                         std::string(filepath.string()),
+                                     ErrorCode::FileIOError,
+                                     SOURCE_REF,
+                                     std::strerror(errno));
         }
 
         // restore the current position
         input_stream.seekg(positon, std::ios::beg);
-        return file_size;
+
+        if (fingerprint == FingerprintFlag::VerifyFingerprint)
+        {
+            return std::size_t(file_size) - sizeof(util::FingerPrint);
+        }
+        else
+        {
+            return file_size;
+        }
     }
 
     /* Read count objects of type T into pointer dest */
     template <typename T> void ReadInto(T *dest, const std::size_t count)
     {
 #if not defined __GNUC__ or __GNUC__ > 4
+        static_assert(!std::is_pointer<T>::value, "saving pointer types is not allowed");
         static_assert(std::is_trivially_copyable<T>::value,
                       "bytewise reading requires trivially copyable type");
 #endif
@@ -95,10 +113,11 @@ class FileReader
         {
             if (result.eof())
             {
-                throw util::exception("Error reading from " + filepath.string() +
-                                      ": Unexpected end of file " + SOURCE_REF);
+                throw util::RuntimeError(
+                    filepath.string(), ErrorCode::UnexpectedEndOfFile, SOURCE_REF);
             }
-            throw util::exception("Error reading from " + filepath.string() + " " + SOURCE_REF);
+            throw util::RuntimeError(
+                filepath.string(), ErrorCode::FileReadError, SOURCE_REF, std::strerror(errno));
         }
     }
 
@@ -123,14 +142,13 @@ class FileReader
 
     /*******************************************/
 
-    std::uint32_t ReadElementCount32() { return ReadOne<std::uint32_t>(); }
     std::uint64_t ReadElementCount64() { return ReadOne<std::uint64_t>(); }
 
-    template <typename T> void DeserializeVector(std::vector<T> &data)
+    template <typename T> std::size_t ReadVectorSize()
     {
         const auto count = ReadElementCount64();
-        data.resize(count);
-        ReadInto(data.data(), count);
+        Skip<T>(count);
+        return count;
     }
 
     bool ReadAndCheckFingerprint()
@@ -140,80 +158,32 @@ class FileReader
 
         if (!loaded_fingerprint.IsValid())
         {
-            util::Log(logERROR) << "Fingerprint magic number or checksum is invalid in "
-                                << filepath.string();
-            return false;
+            throw util::RuntimeError(filepath.string(), ErrorCode::InvalidFingerprint, SOURCE_REF);
         }
 
         if (!expected_fingerprint.IsDataCompatible(loaded_fingerprint))
         {
-            util::Log(logERROR) << filepath.string()
-                                << " is not compatible with this version of OSRM";
-
-            util::Log(logERROR) << "It was prepared with OSRM "
-                                << loaded_fingerprint.GetMajorVersion() << "."
-                                << loaded_fingerprint.GetMinorVersion() << "."
-                                << loaded_fingerprint.GetPatchVersion() << " but you are running "
-                                << OSRM_VERSION;
-            util::Log(logERROR) << "Data is only compatible between minor releases.";
-            return false;
+            const std::string fileversion =
+                std::to_string(loaded_fingerprint.GetMajorVersion()) + "." +
+                std::to_string(loaded_fingerprint.GetMinorVersion()) + "." +
+                std::to_string(loaded_fingerprint.GetPatchVersion());
+            throw util::RuntimeError(std::string(filepath.string()) + " prepared with OSRM " +
+                                         fileversion + " but this is " + OSRM_VERSION,
+                                     ErrorCode::IncompatibleFileVersion,
+                                     SOURCE_REF);
         }
 
         return true;
     }
 
-    std::size_t Size()
-    {
-        auto current_pos = input_stream.tellg();
-        input_stream.seekg(0, input_stream.end);
-        auto length = input_stream.tellg();
-        input_stream.seekg(current_pos, input_stream.beg);
-        return length;
-    }
-
-    std::vector<std::string> ReadLines()
-    {
-        std::vector<std::string> result;
-        std::string thisline;
-        try
-        {
-            while (std::getline(input_stream, thisline))
-            {
-                result.push_back(thisline);
-            }
-        }
-        catch (const std::ios_base::failure &)
-        {
-            // EOF is OK here, everything else, re-throw
-            if (!input_stream.eof())
-                throw;
-        }
-        return result;
-    }
-
-    std::string ReadLine()
-    {
-        std::string thisline;
-        try
-        {
-            std::getline(input_stream, thisline);
-        }
-        catch (const std::ios_base::failure & /*e*/)
-        {
-            // EOF is OK here, everything else, re-throw
-            if (!input_stream.eof())
-                throw;
-        }
-        return thisline;
-    }
+  private:
+    const boost::filesystem::path filepath;
+    boost::filesystem::ifstream input_stream;
+    FingerprintFlag fingerprint;
 };
 
 class FileWriter
 {
-  private:
-    const boost::filesystem::path filepath;
-    boost::filesystem::ofstream output_stream;
-
   public:
     enum FingerprintFlag
     {
@@ -227,11 +197,14 @@ class FileWriter
     }
 
     FileWriter(const boost::filesystem::path &filepath_, const FingerprintFlag flag)
-        : filepath(filepath_)
+        : filepath(filepath_), fingerprint(flag)
     {
         output_stream.open(filepath, std::ios::binary);
         if (!output_stream)
-            throw util::exception("Error opening " + filepath.string());
+        {
+            throw util::RuntimeError(
+                filepath.string(), ErrorCode::FileOpenError, SOURCE_REF, std::strerror(errno));
+        }
 
         if (flag == GenerateFingerprint)
         {
@@ -255,32 +228,51 @@ class FileWriter
 
         if (!result)
         {
-            throw util::exception("Error writing to " + filepath.string());
+            throw util::RuntimeError(
+                filepath.string(), ErrorCode::FileWriteError, SOURCE_REF, std::strerror(errno));
         }
     }
 
-    template <typename T> void WriteFrom(const T &target) { WriteFrom(&target, 1); }
-
-    template <typename T> void WriteOne(const T tmp) { WriteFrom(tmp); }
-
-    void WriteElementCount32(const std::uint32_t count) { WriteOne<std::uint32_t>(count); }
-    void WriteElementCount64(const std::uint64_t count) { WriteOne<std::uint64_t>(count); }
-
-    template <typename T> void SerializeVector(const std::vector<T> &data)
+    template <typename T> void WriteFrom(const std::vector<T> &src)
     {
-        const auto count = data.size();
-        WriteElementCount64(count);
-        return WriteFrom(data.data(), count);
+        WriteFrom(src.data(), src.size());
     }
+
+    template <typename T> void WriteFrom(const T &src) { WriteFrom(&src, 1); }
+
+    template <typename T> void WriteOne(const T &tmp) { WriteFrom(tmp); }
+
+    void WriteElementCount64(const std::uint64_t count) { WriteOne<std::uint64_t>(count); }
 
     void WriteFingerprint()
     {
         const auto fingerprint = util::FingerPrint::GetValid();
         return WriteOne(fingerprint);
     }
+
+    template <typename T> void Skip(const std::size_t element_count)
+    {
+        boost::iostreams::seek(output_stream, element_count * sizeof(T), BOOST_IOS::cur);
+    }
+
+    void SkipToBeginning()
+    {
+        boost::iostreams::seek(output_stream, 0, std::ios::beg);
+
+        // If we wrote a Fingerprint, skip over it
+        if (fingerprint == FingerprintFlag::GenerateFingerprint)
+            Skip<util::FingerPrint>(1);
+
+        // Should probably return a functor for jumping back to the current pos.
+    }
+
+  private:
+    const boost::filesystem::path filepath;
+    boost::filesystem::ofstream output_stream;
+    FingerprintFlag fingerprint;
 };
-}
-}
-}
+} // ns io
+} // ns storage
+} // ns osrm
 
 #endif

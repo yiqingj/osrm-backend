@@ -222,6 +222,43 @@ Feature: Basic Roundabout
            | j,f       | jkl,def,def | depart,roundabout-exit-2,arrive |
            | j,c       | jkl,abc,abc | depart,roundabout-exit-3,arrive |
 
+     Scenario: Mixed Entry and Exit - clockwise order
+        Given the node map
+           """
+             c   a
+           j   b   f
+             k   e
+           l   h   d
+             g   i
+           """
+
+        And the ways
+           | nodes | junction   | oneway |
+           | abc   |            | yes    |
+           | def   |            | yes    |
+           | ghi   |            | yes    |
+           | jkl   |            | yes    |
+           | behkb | roundabout | yes    |
+
+        When I route I should get
+           | waypoints | route       | turns                           |
+           | a,c       | abc,abc,abc | depart,roundabout-exit-4,arrive |
+           | a,l       | abc,jkl,jkl | depart,roundabout-exit-3,arrive |
+           | a,i       | abc,ghi,ghi | depart,roundabout-exit-2,arrive |
+           | a,f       | abc,def,def | depart,roundabout-exit-1,arrive |
+           | d,f       | def,def,def | depart,roundabout-exit-4,arrive |
+           | d,c       | def,abc,abc | depart,roundabout-exit-3,arrive |
+           | d,l       | def,jkl,jkl | depart,roundabout-exit-2,arrive |
+           | d,i       | def,ghi,ghi | depart,roundabout-exit-1,arrive |
+           | g,i       | ghi,ghi,ghi | depart,roundabout-exit-4,arrive |
+           | g,f       | ghi,def,def | depart,roundabout-exit-3,arrive |
+           | g,c       | ghi,abc,abc | depart,roundabout-exit-2,arrive |
+           | g,l       | ghi,jkl,jkl | depart,roundabout-exit-1,arrive |
+           | j,l       | jkl,jkl,jkl | depart,roundabout-exit-4,arrive |
+           | j,i       | jkl,ghi,ghi | depart,roundabout-exit-3,arrive |
+           | j,f       | jkl,def,def | depart,roundabout-exit-2,arrive |
+           | j,c       | jkl,abc,abc | depart,roundabout-exit-1,arrive |
+
     Scenario: Mixed Entry and Exit - segregated roads, different names
         Given the node map
            """
@@ -410,10 +447,10 @@ Feature: Basic Roundabout
             | h    | give_way |
 
         When I route I should get
-            | waypoints | route            | turns                                                |
-            # since we cannot handle these invalid roundabout tags yet, we cannout output roundabout taggings. This will hopefully change some day
+            | waypoints | route            | turns                                                | locations |
+            # since we cannot handle these invalid roundabout tags yet, we cannot output roundabout taggings. This will hopefully change some day
             #| w,x       | ll,egg,egg,tr,tr | depart,roundabout-exit-1,roundabout-exit-2,arrive       |
-            | w,x       | ll,egg,egg,tr,tr | depart,turn right,continue left,turn straight,arrive |
+            | w,x       | ll,egg,egg,tr,tr | depart,turn right,continue left,turn straight,arrive | w,b,d,f,x |
 
     Scenario: Use Lane in Roundabout
         Given the node map
@@ -681,3 +718,131 @@ Feature: Basic Roundabout
            | u,r       | ug,ar,ar | depart,roundabout-exit-3,arrive |
            | u,s       | ug,ds,ds | depart,roundabout-exit-4,arrive |
            | u,t       | ug,ft,ft | depart,roundabout-exit-5,arrive |
+
+
+    @3762
+    Scenario: Only Enter
+        Given the node map
+            """
+                  a
+                  b
+           i   c     e ~ ~ ~ f - h
+                j d
+              k   g
+            """
+
+        And the ways
+            | nodes  | junction   | route |
+            | ab     |            |       |
+            | ef     |            | ferry |
+            | fh     |            |       |
+            | dg     |            |       |
+            | ic     |            |       |
+            | jk     |            |       |
+            | bcjdeb | roundabout |       |
+
+        When I route I should get
+            | waypoints | route          | turns                                                                           |
+            | a,h       | ab,ef,ef,fh,fh | depart,roundabout-exit-4,notification slight right,notification straight,arrive |
+
+
+     Scenario: Drive through roundabout
+        Given the node map
+           """
+              a
+            b e d  f
+              c
+            g   h
+           """
+
+        And the ways
+           | nodes | junction   | oneway |
+           | abcda | roundabout | yes    |
+           | edf   |            |        |
+           | gch   |            | yes    |
+
+        When I route I should get
+           | waypoints | bearings | route       | turns                           |
+           | e,f       | 90 90    | edf,edf,edf | depart,roundabout-exit-1,arrive |
+           | e,h       | 90 135   | edf,gch,gch | depart,roundabout-exit-2,arrive |
+           | g,f       | 45 90    | gch,edf,edf | depart,roundabout-exit-2,arrive |
+           | g,h       | 45 135   | gch,gch,gch | depart,roundabout-exit-1,arrive |
+           | e,e       | 90 270   | edf,edf,edf | depart,roundabout-exit-3,arrive |
+
+    Scenario: CCW and CW roundabouts with overlaps
+        Given the node map
+            """
+            a   d          g   h
+
+            b   c          j   i
+            f   e          k   l
+            """
+
+        And the ways
+            | nodes | highway  | junction   |
+            | abcda | tertiary | roundabout |
+            | ed    | tertiary |            |
+            | af    | tertiary |            |
+            | ghijg | tertiary | roundabout |
+            | kg    | tertiary |            |
+            | hl    | tertiary |            |
+
+        When I route I should get
+            | from | to | route    | turns                           | distance |
+            | e    | f  | ed,af,af | depart,roundabout-exit-1,arrive | 80.1m    |
+            | f    | e  | af,ed,ed | depart,roundabout-exit-1,arrive | 120.1m   |
+            | k    | l  | kg,hl,hl | depart,roundabout-exit-1,arrive | 80.1m    |
+            | l    | k  | hl,kg,kg | depart,roundabout-exit-1,arrive | 120.1m   |
+
+    @4030 @4075
+    Scenario: Service roundabout with service exits
+        Given the node map
+            """
+            g a d f
+            h b1c e
+            """
+
+        And the ways
+            | nodes | highway  | junction   |
+            | abcda | service  | roundabout |
+            | ce    | service  |            |
+            | df    | service  |            |
+            | ag    | tertiary |            |
+            | bh    | service  |            |
+
+        When I route I should get
+            | from | to | route       | turns                           |
+            |    1 | e  | abcda,ce,ce | depart,roundabout-exit-1,arrive |
+            |    1 | f  | abcda,df,df | depart,roundabout-exit-2,arrive |
+            |    1 | g  | abcda,ag,ag | depart,roundabout-exit-3,arrive |
+            |    1 | h  | abcda,bh,bh | depart,roundabout-exit-4,arrive |
+
+    Scenario: Collapsing a sliproad step after roundabouts
+        Given the node map
+            """
+                  a         r          j
+                ╱   ╲     ╱   ╲        │
+            e——b——1——d———s     u——f——g—h——l
+                ╲   ╱     ╲   ╱       `i
+                  c         t          │
+                  │         │          │
+                  m         v          k
+            """
+
+        And the ways
+            | nodes | highway  | junction   | oneway | #         |
+            | abcda | tertiary | roundabout |        | circle    |
+            | ebds  | tertiary |            |        | road      |
+            | cm    | tertiary |            |        |           |
+            | ds    | tertiary |            |        | road      |
+            | rstur | tertiary | roundabout |        | circle2   |
+            | ufghl | tertiary |            |        | road      |
+            | tv    | tertiary |            |        |           |
+            | gi    | tertiary |            | yes    | sliproad  |
+            | jhik  | tertiary |            |        | crossroad |
+
+
+        When I route I should get
+            | from | to | route                        | turns                                                             | distance |
+            | e    | k  | ebds,ebds,ds,ufghl,jhik,jhik | depart,rotary-exit-1,rotary-exit-1,rstur-exit-2,turn right,arrive | 189.1m   |
+            | 1    | k  | ebds,ds,ufghl,jhik,jhik      | depart,rotary-exit-1,rstur-exit-2,turn right,arrive               | 159.1m   |

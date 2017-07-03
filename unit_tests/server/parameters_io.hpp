@@ -2,6 +2,7 @@
 #define OSRM_TEST_SERVER_PARAMETERS_IO
 
 #include "engine/api/route_parameters.hpp"
+#include "engine/approach.hpp"
 #include "engine/bearing.hpp"
 
 #include <ostream>
@@ -51,6 +52,12 @@ inline std::ostream &operator<<(std::ostream &out, api::RouteParameters::Overvie
 inline std::ostream &operator<<(std::ostream &out, Bearing bearing)
 {
     out << bearing.bearing << "," << bearing.range;
+    return out;
+}
+
+inline std::ostream &operator<<(std::ostream &out, Approach approach)
+{
+    out << approach;
     return out;
 }
 }

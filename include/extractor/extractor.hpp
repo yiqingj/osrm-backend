@@ -56,32 +56,34 @@ class Extractor
   private:
     ExtractorConfig config;
 
+    std::tuple<guidance::LaneDescriptionMap, std::vector<TurnRestriction>>
+    ParseOSMData(ScriptingEnvironment &scripting_environment, const unsigned number_of_threads);
+
     std::pair<std::size_t, EdgeID>
     BuildEdgeExpandedGraph(ScriptingEnvironment &scripting_environment,
-                           std::vector<QueryNode> &internal_to_external_node_map,
-                           std::vector<EdgeBasedNode> &node_based_edge_list,
+                           std::vector<util::Coordinate> &coordinates,
+                           extractor::PackedOSMIDs &osm_node_ids,
+                           EdgeBasedNodeDataContainer &edge_based_nodes_container,
+                           std::vector<EdgeBasedNodeSegment> &edge_based_node_segments,
                            std::vector<bool> &node_is_startpoint,
                            std::vector<EdgeWeight> &edge_based_node_weights,
                            util::DeallocatingVector<EdgeBasedEdge> &edge_based_edge_list,
-                           const std::string &intersection_class_output_file);
-    void WriteProfileProperties(const std::string &output_path,
-                                const ProfileProperties &properties) const;
-    void WriteNodeMapping(const std::vector<QueryNode> &internal_to_external_node_map);
+                           const std::string &intersection_class_output_file,
+                           std::vector<TurnRestriction> &turn_restrictions,
+                           guidance::LaneDescriptionMap &turn_lane_map);
     void FindComponents(unsigned max_edge_id,
-                        const util::DeallocatingVector<EdgeBasedEdge> &edges,
-                        std::vector<EdgeBasedNode> &nodes) const;
-    void BuildRTree(std::vector<EdgeBasedNode> node_based_edge_list,
+                        const util::DeallocatingVector<EdgeBasedEdge> &input_edge_list,
+                        const std::vector<EdgeBasedNodeSegment> &input_node_segments,
+                        EdgeBasedNodeDataContainer &nodes_container) const;
+    void BuildRTree(std::vector<EdgeBasedNodeSegment> edge_based_node_segments,
                     std::vector<bool> node_is_startpoint,
-                    const std::vector<QueryNode> &internal_to_external_node_map);
+                    const std::vector<util::Coordinate> &coordinates);
     std::shared_ptr<RestrictionMap> LoadRestrictionMap();
     std::shared_ptr<util::NodeBasedDynamicGraph>
     LoadNodeBasedGraph(std::unordered_set<NodeID> &barrier_nodes,
                        std::unordered_set<NodeID> &traffic_lights,
-                       std::vector<QueryNode> &internal_to_external_node_map);
-
-    void WriteEdgeBasedGraph(const std::string &output_file_filename,
-                             const EdgeID max_edge_id,
-                             util::DeallocatingVector<EdgeBasedEdge> const &edge_based_edge_list);
+                       std::vector<util::Coordinate> &coordinates,
+                       extractor::PackedOSMIDs &osm_node_ids);
 
     void WriteIntersectionClassificationData(
         const std::string &output_file_name,
@@ -89,15 +91,10 @@ class Extractor
         const std::vector<util::guidance::BearingClass> &bearing_classes,
         const std::vector<util::guidance::EntryClass> &entry_classes) const;
 
-    void WriteTurnLaneData(const std::string &turn_lane_file) const;
-
-    // globals persisting during the extraction process and the graph generation process
-
-    // during turn lane analysis, we might have to combine lanes for roads that are modelled as two
-    // but are more or less experienced as one. This can be due to solid lines in between lanes, for
-    // example, that genereate a small separation between them. As a result, we might have to
-    // augment the turn lane map during processing, further adding more types.
-    guidance::LaneDescriptionMap turn_lane_map;
+    // Writes compressed node based graph and its embedding into a file for osrm-partition to use.
+    static void WriteCompressedNodeBasedGraph(const std::string &path,
+                                              const util::NodeBasedDynamicGraph &graph,
+                                              const std::vector<util::Coordinate> &coordiantes);
 };
 }
 }

@@ -34,15 +34,14 @@ std::size_t getNumberOfTurns(const Intersection &intersection)
 } // namespace
 
 TurnLaneHandler::TurnLaneHandler(const util::NodeBasedDynamicGraph &node_based_graph,
-                                 std::vector<std::uint32_t> &turn_lane_offsets,
-                                 std::vector<TurnLaneType::Mask> &turn_lane_masks,
                                  LaneDescriptionMap &lane_description_map,
                                  const TurnAnalysis &turn_analysis,
                                  util::guidance::LaneDataIdMap &id_map)
-    : node_based_graph(node_based_graph), turn_lane_offsets(turn_lane_offsets),
-      turn_lane_masks(turn_lane_masks), lane_description_map(lane_description_map),
+    : node_based_graph(node_based_graph), lane_description_map(lane_description_map),
       turn_analysis(turn_analysis), id_map(id_map)
 {
+    std::tie(turn_lane_offsets, turn_lane_masks) =
+        transformTurnLaneMapIntoArrays(lane_description_map);
     count_handled = count_called = 0;
 }
 
@@ -180,7 +179,7 @@ TurnLaneScenario TurnLaneHandler::deduceScenario(const NodeID at,
         (intersection.size() == 2 &&
          ((lane_description_id != INVALID_LANE_DESCRIPTIONID &&
            lane_description_id ==
-               node_based_graph.GetEdgeData(intersection[1].eid).lane_description_id) ||
+               node_based_graph.GetEdgeData(intersection[1].eid).lane_description_id) &&
           angularDeviation(intersection[1].angle, STRAIGHT_ANGLE) < FUZZY_ANGLE_DIFFERENCE));
 
     if (is_going_straight_and_turns_continue)
@@ -781,19 +780,8 @@ Intersection TurnLaneHandler::handleSliproadTurn(Intersection intersection,
         }
     }
 
-    const auto combined_id = [&]() {
-        auto itr = lane_description_map.find(combined_description);
-        if (lane_description_map.find(combined_description) == lane_description_map.end())
-        {
-            const auto new_id = boost::numeric_cast<LaneDescriptionID>(lane_description_map.size());
-            lane_description_map[combined_description] = new_id;
-            return new_id;
-        }
-        else
-        {
-            return itr->second;
-        }
-    }();
+    const auto combined_id = lane_description_map.ConcurrentFindOrAdd(combined_description);
+
     return simpleMatchTuplesToTurns(std::move(intersection), lane_data, combined_id);
 }
 

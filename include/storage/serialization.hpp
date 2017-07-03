@@ -1,23 +1,13 @@
-#ifndef OSRM_STORAGE_SERIALIZATION_HPP_
-#define OSRM_STORAGE_SERIALIZATION_HPP_
+#ifndef OSRM_STORAGE_SERIALIZATION_HPP
+#define OSRM_STORAGE_SERIALIZATION_HPP
 
-#include "contractor/query_edge.hpp"
-#include "extractor/extractor.hpp"
-#include "extractor/original_edge_data.hpp"
-#include "extractor/query_node.hpp"
+#include "util/deallocating_vector.hpp"
+#include "util/integer_range.hpp"
+#include "util/vector_view.hpp"
+
 #include "storage/io.hpp"
-#include "util/exception.hpp"
-#include "util/fingerprint.hpp"
-#include "util/log.hpp"
-#include "util/static_graph.hpp"
 
-#include <boost/filesystem/fstream.hpp>
-#include <boost/iostreams/seek.hpp>
-
-#include <cerrno>
-#include <cstring>
-#include <tuple>
-#include <type_traits>
+#include <cstdint>
 
 namespace osrm
 {
@@ -26,136 +16,135 @@ namespace storage
 namespace serialization
 {
 
-// To make function calls consistent, this function returns the fixed number of properties
-inline std::size_t readPropertiesCount() { return 1; }
+/* All vector formats here use the same on-disk format.
+ * This is important because we want to be able to write from a vector
+ * of one kind, but read it into a vector of another kind.
+ *
+ * All vector types with this guarantee should be placed in this file.
+ */
 
-struct HSGRHeader
+template <typename T>
+inline void read(storage::io::FileReader &reader, util::DeallocatingVector<T> &vec)
 {
-    std::uint32_t checksum;
-    std::uint64_t number_of_nodes;
-    std::uint64_t number_of_edges;
-};
-
-// Reads the checksum, number of nodes and number of edges written in the header file of a `.hsgr`
-// file and returns them in a HSGRHeader struct
-inline HSGRHeader readHSGRHeader(io::FileReader &input_file)
-{
-
-    HSGRHeader header;
-    input_file.ReadInto(header.checksum);
-    input_file.ReadInto(header.number_of_nodes);
-    input_file.ReadInto(header.number_of_edges);
-
-    // If we have edges, then we must have nodes.
-    // However, there can be nodes with no edges (some test cases create this)
-    BOOST_ASSERT_MSG(header.number_of_edges == 0 || header.number_of_nodes > 0,
-                     "edges exist, but there are no nodes");
-
-    return header;
-}
-
-// Reads the graph data of a `.hsgr` file into memory
-// Needs to be called after readHSGRHeader() to get the correct offset in the stream
-using NodeT = typename util::StaticGraph<contractor::QueryEdge::EdgeData>::NodeArrayEntry;
-using EdgeT = typename util::StaticGraph<contractor::QueryEdge::EdgeData>::EdgeArrayEntry;
-inline void readHSGR(io::FileReader &input_file,
-                     NodeT *node_buffer,
-                     const std::uint64_t number_of_nodes,
-                     EdgeT *edge_buffer,
-                     const std::uint64_t number_of_edges)
-{
-    BOOST_ASSERT(node_buffer);
-    BOOST_ASSERT(edge_buffer);
-    input_file.ReadInto(node_buffer, number_of_nodes);
-    input_file.ReadInto(edge_buffer, number_of_edges);
-}
-
-// Loads datasource_indexes from .datasource_indexes into memory
-// Needs to be called after readElementCount() to get the correct offset in the stream
-inline void readDatasourceIndexes(io::FileReader &datasource_indexes_file,
-                                  uint8_t *datasource_buffer,
-                                  const std::uint64_t number_of_datasource_indexes)
-{
-    BOOST_ASSERT(datasource_buffer);
-    datasource_indexes_file.ReadInto(datasource_buffer, number_of_datasource_indexes);
-}
-
-// Loads edge data from .edge files into memory which includes its
-// geometry, name ID, turn instruction, lane data ID, travel mode, entry class ID
-// Needs to be called after readElementCount() to get the correct offset in the stream
-inline void readEdges(io::FileReader &edges_input_file,
-                      GeometryID *geometry_list,
-                      NameID *name_id_list,
-                      extractor::guidance::TurnInstruction *turn_instruction_list,
-                      LaneDataID *lane_data_id_list,
-                      extractor::TravelMode *travel_mode_list,
-                      EntryClassID *entry_class_id_list,
-                      util::guidance::TurnBearing *pre_turn_bearing_list,
-                      util::guidance::TurnBearing *post_turn_bearing_list,
-                      const std::uint64_t number_of_edges)
-{
-    BOOST_ASSERT(geometry_list);
-    BOOST_ASSERT(name_id_list);
-    BOOST_ASSERT(turn_instruction_list);
-    BOOST_ASSERT(lane_data_id_list);
-    BOOST_ASSERT(travel_mode_list);
-    BOOST_ASSERT(entry_class_id_list);
-    extractor::OriginalEdgeData current_edge_data;
-    for (std::uint64_t i = 0; i < number_of_edges; ++i)
+    vec.current_size = reader.ReadElementCount64(vec.current_size);
+    std::size_t num_blocks =
+        std::ceil(vec.current_size / util::DeallocatingVector<T>::ELEMENTS_PER_BLOCK);
+    vec.bucket_list.resize(num_blocks);
+    // Read all but the last block which can be partital
+    for (auto bucket_index : util::irange<std::size_t>(0, num_blocks - 1))
     {
-        edges_input_file.ReadInto(current_edge_data);
+        vec.bucket_list[bucket_index] = new T[util::DeallocatingVector<T>::ELEMENTS_PER_BLOCK];
+        reader.ReadInto(vec.bucket_list[bucket_index],
+                        util::DeallocatingVector<T>::ELEMENTS_PER_BLOCK);
+    }
+    std::size_t last_block_size =
+        vec.current_size % util::DeallocatingVector<T>::ELEMENTS_PER_BLOCK;
+    vec.bucket_list.back() = new T[util::DeallocatingVector<T>::ELEMENTS_PER_BLOCK];
+    reader.ReadInto(vec.bucket_list.back(), last_block_size);
+}
 
-        geometry_list[i] = current_edge_data.via_geometry;
-        name_id_list[i] = current_edge_data.name_id;
-        turn_instruction_list[i] = current_edge_data.turn_instruction;
-        lane_data_id_list[i] = current_edge_data.lane_data_id;
-        travel_mode_list[i] = current_edge_data.travel_mode;
-        entry_class_id_list[i] = current_edge_data.entry_classid;
-        pre_turn_bearing_list[i] = current_edge_data.pre_turn_bearing;
-        post_turn_bearing_list[i] = current_edge_data.post_turn_bearing;
+template <typename T>
+inline void write(storage::io::FileWriter &writer, const util::DeallocatingVector<T> &vec)
+{
+    writer.WriteElementCount64(vec.current_size);
+    // Write all but the last block which can be partially filled
+    for (auto bucket_index : util::irange<std::size_t>(0, vec.bucket_list.size() - 1))
+    {
+        writer.WriteFrom(vec.bucket_list[bucket_index],
+                         util::DeallocatingVector<T>::ELEMENTS_PER_BLOCK);
+    }
+    std::size_t last_block_size =
+        vec.current_size % util::DeallocatingVector<T>::ELEMENTS_PER_BLOCK;
+    writer.WriteFrom(vec.bucket_list.back(), last_block_size);
+}
+
+template <typename T> inline void read(storage::io::FileReader &reader, stxxl::vector<T> &vec)
+{
+    auto size = reader.ReadOne<std::uint64_t>();
+    vec.reserve(size);
+    for (auto idx : util::irange<std::size_t>(0, size))
+    {
+        (void)idx;
+        vec.push_back(reader.ReadOne<T>());
     }
 }
 
-// Loads coordinates and OSM node IDs from .nodes files into memory
-// Needs to be called after readElementCount() to get the correct offset in the stream
-template <typename OSMNodeIDVectorT>
-void readNodes(io::FileReader &nodes_file,
-               util::Coordinate *coordinate_list,
-               OSMNodeIDVectorT &osmnodeid_list,
-               const std::uint64_t number_of_coordinates)
+template <typename T>
+inline void write(storage::io::FileWriter &writer, const stxxl::vector<T> &vec)
 {
-    BOOST_ASSERT(coordinate_list);
-    extractor::QueryNode current_node;
-    for (std::uint64_t i = 0; i < number_of_coordinates; ++i)
+    writer.WriteOne(vec.size());
+    for (auto idx : util::irange<std::size_t>(0, vec.size()))
     {
-        nodes_file.ReadInto(current_node);
-        coordinate_list[i] = util::Coordinate(current_node.lon, current_node.lat);
-        osmnodeid_list.push_back(current_node.node_id);
-        BOOST_ASSERT(coordinate_list[i].IsValid());
+        writer.WriteOne<T>(vec[idx]);
     }
 }
 
-// Reads datasource names out of .datasource_names files and metadata such as
-// the length and offset of each name
-struct DatasourceNamesData
+template <typename T> void read(io::FileReader &reader, std::vector<T> &data)
 {
-    std::vector<char> names;
-    std::vector<std::size_t> offsets;
-    std::vector<std::size_t> lengths;
-};
-inline DatasourceNamesData readDatasourceNames(io::FileReader &datasource_names_file)
+    const auto count = reader.ReadElementCount64();
+    data.resize(count);
+    reader.ReadInto(data.data(), count);
+}
+
+template <typename T> void write(io::FileWriter &writer, const std::vector<T> &data)
 {
-    DatasourceNamesData datasource_names_data;
-    std::vector<std::string> lines = datasource_names_file.ReadLines();
-    for (const auto &name : lines)
+    const auto count = data.size();
+    writer.WriteElementCount64(count);
+    return writer.WriteFrom(data.data(), count);
+}
+
+template <typename T> void read(io::FileReader &reader, util::vector_view<T> &data)
+{
+    const auto count = reader.ReadElementCount64();
+    BOOST_ASSERT(data.size() == count);
+    reader.ReadInto(data.data(), count);
+}
+
+template <typename T> void write(io::FileWriter &writer, const util::vector_view<T> &data)
+{
+    const auto count = data.size();
+    writer.WriteElementCount64(count);
+    writer.WriteFrom(data.data(), count);
+}
+
+template <> inline void read<bool>(io::FileReader &reader, util::vector_view<bool> &data)
+{
+    const auto count = reader.ReadElementCount64();
+    BOOST_ASSERT(data.size() == count);
+    for (const auto index : util::irange<std::uint64_t>(0, count))
     {
-        datasource_names_data.offsets.push_back(datasource_names_data.names.size());
-        datasource_names_data.lengths.push_back(name.size());
-        std::copy(name.c_str(),
-                  name.c_str() + name.size(),
-                  std::back_inserter(datasource_names_data.names));
+        data[index] = reader.ReadOne<bool>();
     }
-    return datasource_names_data;
+}
+
+template <> inline void write<bool>(io::FileWriter &writer, const util::vector_view<bool> &data)
+{
+    const auto count = data.size();
+    writer.WriteElementCount64(count);
+    for (const auto index : util::irange<std::uint64_t>(0, count))
+    {
+        writer.WriteOne<bool>(data[index]);
+    }
+}
+
+template <> inline void read<bool>(io::FileReader &reader, std::vector<bool> &data)
+{
+    const auto count = reader.ReadElementCount64();
+    BOOST_ASSERT(data.size() == count);
+    for (const auto index : util::irange<std::uint64_t>(0, count))
+    {
+        data[index] = reader.ReadOne<bool>();
+    }
+}
+
+template <> inline void write<bool>(io::FileWriter &writer, const std::vector<bool> &data)
+{
+    const auto count = data.size();
+    writer.WriteElementCount64(count);
+    for (const auto index : util::irange<std::uint64_t>(0, count))
+    {
+        writer.WriteOne<bool>(data[index]);
+    }
 }
 }
 }

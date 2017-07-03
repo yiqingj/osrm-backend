@@ -1,16 +1,19 @@
 #include "extractor/extraction_containers.hpp"
 #include "extractor/extraction_segment.hpp"
 #include "extractor/extraction_way.hpp"
+#include "extractor/restriction.hpp"
+#include "extractor/serialization.hpp"
 
 #include "util/coordinate_calculation.hpp"
 
 #include "util/exception.hpp"
 #include "util/exception_utils.hpp"
 #include "util/fingerprint.hpp"
-#include "util/io.hpp"
 #include "util/log.hpp"
 #include "util/name_table.hpp"
 #include "util/timing_util.hpp"
+
+#include "storage/io.hpp"
 
 #include <boost/assert.hpp>
 #include <boost/filesystem.hpp>
@@ -133,7 +136,6 @@ void ExtractionContainers::FlushVectors()
     all_edges_list.flush();
     name_char_data.flush();
     name_offsets.flush();
-    restrictions_list.flush();
     way_start_end_id_list.flush();
 }
 
@@ -141,7 +143,7 @@ void ExtractionContainers::FlushVectors()
  * Processes the collected data and serializes it.
  * At this point nodes are still referenced by their OSM id.
  *
- * - map start-end nodes of ways to ways used int restrictions to compute compressed
+ * - map start-end nodes of ways to ways used in restrictions to compute compressed
  *   trippe representation
  * - filter nodes list to nodes that are referenced by ways
  * - merge edges with nodes to include location of start/end points and serialize
@@ -152,17 +154,15 @@ void ExtractionContainers::PrepareData(ScriptingEnvironment &scripting_environme
                                        const std::string &restrictions_file_name,
                                        const std::string &name_file_name)
 {
-    std::ofstream file_out_stream;
-    file_out_stream.open(output_file_name.c_str(), std::ios::binary);
-    const util::FingerPrint fingerprint = util::FingerPrint::GetValid();
-    file_out_stream.write((char *)&fingerprint, sizeof(util::FingerPrint));
+    storage::io::FileWriter file_out(output_file_name,
+                                     storage::io::FileWriter::GenerateFingerprint);
 
     FlushVectors();
 
     PrepareNodes();
-    WriteNodes(file_out_stream);
+    WriteNodes(file_out);
     PrepareEdges(scripting_environment);
-    WriteEdges(file_out_stream);
+    WriteEdges(file_out);
 
     PrepareRestrictions();
     WriteRestrictions(restrictions_file_name);
@@ -174,7 +174,7 @@ void ExtractionContainers::WriteCharData(const std::string &file_name)
     util::UnbufferedLog log;
     log << "writing street name index ... ";
     TIMER_START(write_index);
-    boost::filesystem::ofstream file(file_name, std::ios::binary);
+    storage::io::FileWriter file(file_name, storage::io::FileWriter::GenerateFingerprint);
 
     const util::NameTable::IndexedData indexed_data;
     indexed_data.write(file, name_offsets.begin(), name_offsets.end(), name_char_data.begin());
@@ -256,7 +256,7 @@ void ExtractionContainers::PrepareNodes()
                                   "supports 2^32 unique nodes, but there were " +
                                   std::to_string(internal_id) + SOURCE_REF);
         }
-        max_internal_node_id = boost::numeric_cast<NodeID>(internal_id);
+        max_internal_node_id = boost::numeric_cast<std::uint64_t>(internal_id);
         TIMER_STOP(id_map);
         log << "ok, after " << TIMER_SEC(id_map) << "s";
     }
@@ -388,21 +388,24 @@ void ExtractionContainers::PrepareEdges(ScriptingEnvironment &scripting_environm
             BOOST_ASSERT(edge_iterator->source_coordinate.lon !=
                          util::FixedLongitude{std::numeric_limits<std::int32_t>::min()});
 
-            const util::Coordinate target_coord{node_iterator->lon, node_iterator->lat};
-            const double distance = util::coordinate_calculation::greatCircleDistance(
-                edge_iterator->source_coordinate, target_coord);
+            util::Coordinate source_coord(edge_iterator->source_coordinate);
+            util::Coordinate target_coord{node_iterator->lon, node_iterator->lat};
 
-            auto weight = edge_iterator->weight_data(distance);
-            auto duration = edge_iterator->duration_data(distance);
+            // flip source and target coordinates if segment is in backward direction only
+            if (!edge_iterator->result.forward && edge_iterator->result.backward)
+                std::swap(source_coord, target_coord);
 
-            ExtractionSegment extracted_segment(
-                edge_iterator->source_coordinate, target_coord, distance, weight, duration);
-            scripting_environment.ProcessSegment(extracted_segment);
+            const auto distance =
+                util::coordinate_calculation::greatCircleDistance(source_coord, target_coord);
+            const auto weight = edge_iterator->weight_data(distance);
+            const auto duration = edge_iterator->duration_data(distance);
+
+            ExtractionSegment segment(source_coord, target_coord, distance, weight, duration);
+            scripting_environment.ProcessSegment(segment);
 
             auto &edge = edge_iterator->result;
-            edge.weight =
-                std::max<EdgeWeight>(1, std::round(extracted_segment.weight * weight_multiplier));
-            edge.duration = std::max<EdgeWeight>(1, std::round(extracted_segment.duration * 10.));
+            edge.weight = std::max<EdgeWeight>(1, std::round(segment.weight * weight_multiplier));
+            edge.duration = std::max<EdgeWeight>(1, std::round(segment.duration * 10.));
 
             // assign new node id
             auto id_iter = external_to_internal_node_id_map.find(node_iterator->node_id);
@@ -542,21 +545,15 @@ void ExtractionContainers::PrepareEdges(ScriptingEnvironment &scripting_environm
     }
 }
 
-void ExtractionContainers::WriteEdges(std::ofstream &file_out_stream) const
+void ExtractionContainers::WriteEdges(storage::io::FileWriter &file_out) const
 {
-
-    std::size_t start_position = 0;
-    std::uint64_t used_edges_counter = 0;
-    std::uint32_t used_edges_counter_buffer = 0;
+    std::vector<NodeBasedEdge> normal_edges;
+    normal_edges.reserve(all_edges_list.size());
     {
         util::UnbufferedLog log;
         log << "Writing used edges       ... " << std::flush;
         TIMER_START(write_edges);
         // Traverse list of edges and nodes in parallel and set target coord
-
-        start_position = file_out_stream.tellp();
-        file_out_stream.write((char *)&used_edges_counter_buffer,
-                              sizeof(used_edges_counter_buffer));
 
         for (const auto &edge : all_edges_list)
         {
@@ -567,41 +564,30 @@ void ExtractionContainers::WriteEdges(std::ofstream &file_out_stream) const
 
             // IMPORTANT: here, we're using slicing to only write the data from the base
             // class of NodeBasedEdgeWithOSM
-            NodeBasedEdge tmp = edge.result;
-            file_out_stream.write((char *)&tmp, sizeof(NodeBasedEdge));
-            used_edges_counter++;
+            normal_edges.push_back(edge.result);
         }
 
-        if (used_edges_counter > std::numeric_limits<unsigned>::max())
+        if (normal_edges.size() > std::numeric_limits<uint32_t>::max())
         {
             throw util::exception("There are too many edges, OSRM only supports 2^32" + SOURCE_REF);
         }
+
+        file_out.WriteElementCount64(normal_edges.size());
+        file_out.WriteFrom(normal_edges.data(), normal_edges.size());
+
         TIMER_STOP(write_edges);
         log << "ok, after " << TIMER_SEC(write_edges) << "s";
+        log << "Processed " << normal_edges.size() << " edges";
     }
-
-    {
-        util::UnbufferedLog log;
-        log << "setting number of edges   ... " << std::flush;
-
-        used_edges_counter_buffer = boost::numeric_cast<std::uint32_t>(used_edges_counter);
-
-        file_out_stream.seekp(start_position);
-        file_out_stream.write((char *)&used_edges_counter_buffer,
-                              sizeof(used_edges_counter_buffer));
-        log << "ok";
-    }
-
-    util::Log() << "Processed " << used_edges_counter << " edges";
 }
 
-void ExtractionContainers::WriteNodes(std::ofstream &file_out_stream) const
+void ExtractionContainers::WriteNodes(storage::io::FileWriter &file_out) const
 {
     {
         // write dummy value, will be overwritten later
         util::UnbufferedLog log;
         log << "setting number of nodes   ... " << std::flush;
-        file_out_stream.write((char *)&max_internal_node_id, sizeof(unsigned));
+        file_out.WriteElementCount64(max_internal_node_id);
         log << "ok";
     }
 
@@ -629,7 +615,7 @@ void ExtractionContainers::WriteNodes(std::ofstream &file_out_stream) const
             }
             BOOST_ASSERT(*node_id_iterator == node_iterator->node_id);
 
-            file_out_stream.write((char *)&(*node_iterator), sizeof(ExternalMemoryNode));
+            file_out.WriteOne((*node_iterator));
 
             ++node_id_iterator;
             ++node_iterator;
@@ -641,16 +627,14 @@ void ExtractionContainers::WriteNodes(std::ofstream &file_out_stream) const
     util::Log() << "Processed " << max_internal_node_id << " nodes";
 }
 
-void ExtractionContainers::WriteRestrictions(const std::string &path) const
+void ExtractionContainers::WriteRestrictions(const std::string &path)
 {
     // serialize restrictions
-    std::ofstream restrictions_out_stream;
-    unsigned written_restriction_count = 0;
-    restrictions_out_stream.open(path.c_str(), std::ios::binary);
-    const util::FingerPrint fingerprint = util::FingerPrint::GetValid();
-    restrictions_out_stream.write((char *)&fingerprint, sizeof(util::FingerPrint));
-    const auto count_position = restrictions_out_stream.tellp();
-    restrictions_out_stream.write((char *)&written_restriction_count, sizeof(unsigned));
+    std::uint64_t written_restriction_count = 0;
+    storage::io::FileWriter restrictions_out_file(path,
+                                                  storage::io::FileWriter::GenerateFingerprint);
+
+    restrictions_out_file.WriteElementCount64(written_restriction_count);
 
     for (const auto &restriction_container : restrictions_list)
     {
@@ -658,14 +642,27 @@ void ExtractionContainers::WriteRestrictions(const std::string &path) const
             SPECIAL_NODEID != restriction_container.restriction.via.node &&
             SPECIAL_NODEID != restriction_container.restriction.to.node)
         {
-            restrictions_out_stream.write((char *)&(restriction_container.restriction),
-                                          sizeof(TurnRestriction));
-            ++written_restriction_count;
+            if (!restriction_container.restriction.condition.empty())
+            {
+                // write conditional turn restrictions to disk, for use in contractor later
+                extractor::serialization::write(restrictions_out_file,
+                                                restriction_container.restriction);
+                ++written_restriction_count;
+            }
+            else
+            {
+                // save unconditional turn restriction to memory, for use in ebg later
+                unconditional_turn_restrictions.push_back(
+                    std::move(restriction_container.restriction));
+            }
         }
     }
-    restrictions_out_stream.seekp(count_position);
-    restrictions_out_stream.write((char *)&written_restriction_count, sizeof(unsigned));
-    util::Log() << "usable restrictions: " << written_restriction_count;
+    restrictions_out_file.SkipToBeginning();
+    restrictions_out_file.WriteElementCount64(written_restriction_count);
+    util::Log() << "number of restrictions saved to memory: "
+                << unconditional_turn_restrictions.size();
+    util::Log() << "number of conditional restrictions written to disk: "
+                << written_restriction_count;
 }
 
 void ExtractionContainers::PrepareRestrictions()
@@ -686,10 +683,8 @@ void ExtractionContainers::PrepareRestrictions()
         util::UnbufferedLog log;
         log << "Sorting " << restrictions_list.size() << " restriction. by from... ";
         TIMER_START(sort_restrictions);
-        stxxl::sort(restrictions_list.begin(),
-                    restrictions_list.end(),
-                    CmpRestrictionContainerByFrom(),
-                    stxxl_memory);
+        std::sort(
+            restrictions_list.begin(), restrictions_list.end(), CmpRestrictionContainerByFrom());
         TIMER_STOP(sort_restrictions);
         log << "ok, after " << TIMER_SEC(sort_restrictions) << "s";
     }
@@ -772,6 +767,11 @@ void ExtractionContainers::PrepareRestrictions()
                 }
                 restrictions_iterator->restriction.from.node = id_iter->second;
             }
+            else
+            {
+                // if it's neither, this is an invalid restriction
+                restrictions_iterator->restriction.from.node = SPECIAL_NODEID;
+            }
             ++restrictions_iterator;
         }
 
@@ -783,10 +783,8 @@ void ExtractionContainers::PrepareRestrictions()
         util::UnbufferedLog log;
         log << "Sorting restrictions. by to  ... " << std::flush;
         TIMER_START(sort_restrictions_to);
-        stxxl::sort(restrictions_list.begin(),
-                    restrictions_list.end(),
-                    CmpRestrictionContainerByTo(),
-                    stxxl_memory);
+        std::sort(
+            restrictions_list.begin(), restrictions_list.end(), CmpRestrictionContainerByTo());
         TIMER_STOP(sort_restrictions_to);
         log << "ok, after " << TIMER_SEC(sort_restrictions_to) << "s";
     }
@@ -863,6 +861,11 @@ void ExtractionContainers::PrepareRestrictions()
                     continue;
                 }
                 restrictions_iterator->restriction.to.node = to_id_iter->second;
+            }
+            else
+            {
+                // if it's neither, this is an invalid restriction
+                restrictions_iterator->restriction.to.node = SPECIAL_NODEID;
             }
             ++restrictions_iterator;
         }

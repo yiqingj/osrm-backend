@@ -24,14 +24,22 @@ namespace plugins
 {
 
 TablePlugin::TablePlugin(const int max_locations_distance_table)
-    : distance_table(heaps), max_locations_distance_table(max_locations_distance_table)
+    : max_locations_distance_table(max_locations_distance_table)
 {
 }
 
-Status TablePlugin::HandleRequest(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
+Status TablePlugin::HandleRequest(const datafacade::ContiguousInternalMemoryDataFacadeBase &facade,
+                                  const RoutingAlgorithmsInterface &algorithms,
                                   const api::TableParameters &params,
                                   util::json::Object &result) const
 {
+    if (!algorithms.HasManyToManySearch())
+    {
+        return Error("NotImplemented",
+                     "Many to many search is not implemented for the chosen search algorithm.",
+                     result);
+    }
+
     BOOST_ASSERT(params.IsValid());
 
     if (!CheckAllCoordinates(params.coordinates))
@@ -59,16 +67,26 @@ Status TablePlugin::HandleRequest(const std::shared_ptr<const datafacade::BaseDa
         return Error("TooBig", "Too many table coordinates", result);
     }
 
-    auto snapped_phantoms = SnapPhantomNodes(GetPhantomNodes(*facade, params));
+    auto phantom_nodes = GetPhantomNodes(facade, params);
+
+    if (phantom_nodes.size() != params.coordinates.size())
+    {
+        return Error("NoSegment",
+                     std::string("Could not find a matching segment for coordinate ") +
+                         std::to_string(phantom_nodes.size()),
+                     result);
+    }
+
+    auto snapped_phantoms = SnapPhantomNodes(phantom_nodes);
     auto result_table =
-        distance_table(facade, snapped_phantoms, params.sources, params.destinations);
+        algorithms.ManyToManySearch(snapped_phantoms, params.sources, params.destinations);
 
     if (result_table.empty())
     {
         return Error("NoTable", "No table found", result);
     }
 
-    api::TableAPI table_api{*facade, params};
+    api::TableAPI table_api{facade, params};
     table_api.MakeResponse(result_table, snapped_phantoms, result);
 
     return Status::Ok;

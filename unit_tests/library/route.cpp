@@ -1,13 +1,13 @@
 #include <boost/test/test_case_template.hpp>
 #include <boost/test/unit_test.hpp>
 
-#include "args.hpp"
 #include "coordinates.hpp"
 #include "equal_json.hpp"
 #include "fixture.hpp"
 
 #include "osrm/coordinate.hpp"
 #include "osrm/engine_config.hpp"
+#include "osrm/exception.hpp"
 #include "osrm/json_container.hpp"
 #include "osrm/json_container.hpp"
 #include "osrm/osrm.hpp"
@@ -18,8 +18,7 @@ BOOST_AUTO_TEST_SUITE(route)
 
 BOOST_AUTO_TEST_CASE(test_route_same_coordinates_fixture)
 {
-    const auto args = get_args();
-    auto osrm = getOSRM(args.at(0));
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -105,8 +104,7 @@ BOOST_AUTO_TEST_CASE(test_route_same_coordinates_fixture)
 
 BOOST_AUTO_TEST_CASE(test_route_same_coordinates)
 {
-    const auto args = get_args();
-    auto osrm = getOSRM(args.at(0));
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -258,8 +256,7 @@ BOOST_AUTO_TEST_CASE(test_route_same_coordinates)
 
 BOOST_AUTO_TEST_CASE(test_route_response_for_locations_in_small_component)
 {
-    const auto args = get_args();
-    auto osrm = getOSRM(args.at(0));
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -294,8 +291,7 @@ BOOST_AUTO_TEST_CASE(test_route_response_for_locations_in_small_component)
 
 BOOST_AUTO_TEST_CASE(test_route_response_for_locations_in_big_component)
 {
-    const auto args = get_args();
-    auto osrm = getOSRM(args.at(0));
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -330,8 +326,7 @@ BOOST_AUTO_TEST_CASE(test_route_response_for_locations_in_big_component)
 
 BOOST_AUTO_TEST_CASE(test_route_response_for_locations_across_components)
 {
-    const auto args = get_args();
-    auto osrm = getOSRM(args.at(0));
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -368,8 +363,7 @@ BOOST_AUTO_TEST_CASE(test_route_response_for_locations_across_components)
 
 BOOST_AUTO_TEST_CASE(test_route_user_disables_generating_hints)
 {
-    const auto args = get_args();
-    auto osrm = getOSRM(args.at(0));
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -389,8 +383,7 @@ BOOST_AUTO_TEST_CASE(test_route_user_disables_generating_hints)
 
 BOOST_AUTO_TEST_CASE(speed_annotation_matches_duration_and_distance)
 {
-    const auto args = get_args();
-    auto osrm = getOSRM(args.at(0));
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -424,8 +417,7 @@ BOOST_AUTO_TEST_CASE(speed_annotation_matches_duration_and_distance)
 
 BOOST_AUTO_TEST_CASE(test_manual_setting_of_annotations_property)
 {
-    const auto args = get_args();
-    auto osrm = getOSRM(args.at(0));
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 

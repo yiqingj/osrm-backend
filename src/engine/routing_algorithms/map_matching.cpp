@@ -1,4 +1,21 @@
 #include "engine/routing_algorithms/map_matching.hpp"
+#include "engine/routing_algorithms/routing_base_ch.hpp"
+#include "engine/routing_algorithms/routing_base_mld.hpp"
+
+#include "engine/map_matching/hidden_markov_model.hpp"
+#include "engine/map_matching/matching_confidence.hpp"
+#include "engine/map_matching/sub_matching.hpp"
+
+#include "util/coordinate_calculation.hpp"
+#include "util/for_each_pair.hpp"
+
+#include <algorithm>
+#include <cstddef>
+#include <deque>
+#include <iomanip>
+#include <memory>
+#include <numeric>
+#include <utility>
 
 namespace osrm
 {
@@ -7,7 +24,15 @@ namespace engine
 namespace routing_algorithms
 {
 
-unsigned MapMatching::GetMedianSampleTime(const std::vector<unsigned> &timestamps) const
+namespace
+{
+using HMM = map_matching::HiddenMarkovModel<CandidateLists>;
+
+constexpr static const unsigned MAX_BROKEN_STATES = 10;
+constexpr static const double MATCHING_BETA = 10;
+constexpr static const double MAX_DISTANCE_DELTA = 2000.;
+
+unsigned getMedianSampleTime(const std::vector<unsigned> &timestamps)
 {
     BOOST_ASSERT(timestamps.size() > 1);
 
@@ -21,14 +46,21 @@ unsigned MapMatching::GetMedianSampleTime(const std::vector<unsigned> &timestamp
     std::nth_element(first_elem, median, sample_times.end());
     return *median;
 }
+}
 
-SubMatchingList MapMatching::
-operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
-           const CandidateLists &candidates_list,
-           const std::vector<util::Coordinate> &trace_coordinates,
-           const std::vector<unsigned> &trace_timestamps,
-           const std::vector<boost::optional<double>> &trace_gps_precision) const
+template <typename Algorithm>
+SubMatchingList mapMatching(SearchEngineData<Algorithm> &engine_working_data,
+                            const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
+                            const CandidateLists &candidates_list,
+                            const std::vector<util::Coordinate> &trace_coordinates,
+                            const std::vector<unsigned> &trace_timestamps,
+                            const std::vector<boost::optional<double>> &trace_gps_precision,
+                            const bool allow_splitting)
 {
+    map_matching::MatchingConfidence confidence;
+    map_matching::EmissionLogProbability default_emission_log_probability(DEFAULT_GPS_PRECISION);
+    map_matching::TransitionLogProbability transition_log_probability(MATCHING_BETA);
+
     SubMatchingList sub_matchings;
 
     BOOST_ASSERT(candidates_list.size() == trace_coordinates.size());
@@ -39,7 +71,7 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
     const auto median_sample_time = [&] {
         if (use_timestamps)
         {
-            return std::max(1u, GetMedianSampleTime(trace_timestamps));
+            return std::max(1u, getMedianSampleTime(trace_timestamps));
         }
         else
         {
@@ -47,16 +79,6 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
         }
     }();
     const auto max_broken_time = median_sample_time * MAX_BROKEN_STATES;
-    const auto max_distance_delta = [&] {
-        if (use_timestamps)
-        {
-            return median_sample_time * facade->GetMapMatchingMaxSpeed();
-        }
-        else
-        {
-            return MAX_DISTANCE_DELTA;
-        }
-    }();
 
     std::vector<std::vector<double>> emission_log_probabilities(trace_coordinates.size());
     if (trace_gps_precision.empty())
@@ -67,7 +89,7 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
             std::transform(candidates_list[t].begin(),
                            candidates_list[t].end(),
                            emission_log_probabilities[t].begin(),
-                           [this](const PhantomNodeWithDistance &candidate) {
+                           [&](const PhantomNodeWithDistance &candidate) {
                                return default_emission_log_probability(candidate.distance);
                            });
         }
@@ -94,7 +116,7 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
                 std::transform(candidates_list[t].begin(),
                                candidates_list[t].end(),
                                emission_log_probabilities[t].begin(),
-                               [this](const PhantomNodeWithDistance &candidate) {
+                               [&](const PhantomNodeWithDistance &candidate) {
                                    return default_emission_log_probability(candidate.distance);
                                });
             }
@@ -109,13 +131,11 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
         return sub_matchings;
     }
 
-    engine_working_data.InitializeOrClearFirstThreadLocalStorage(facade->GetNumberOfNodes());
-    engine_working_data.InitializeOrClearSecondThreadLocalStorage(facade->GetNumberOfNodes());
+    const auto nodes_number = facade.GetNumberOfNodes();
+    engine_working_data.InitializeOrClearFirstThreadLocalStorage(nodes_number);
 
-    QueryHeap &forward_heap = *(engine_working_data.forward_heap_1);
-    QueryHeap &reverse_heap = *(engine_working_data.reverse_heap_1);
-    QueryHeap &forward_core_heap = *(engine_working_data.forward_heap_2);
-    QueryHeap &reverse_core_heap = *(engine_working_data.reverse_heap_2);
+    auto &forward_heap = *engine_working_data.forward_heap_1;
+    auto &reverse_heap = *engine_working_data.reverse_heap_1;
 
     std::size_t breakage_begin = map_matching::INVALID_STATE;
     std::vector<std::size_t> split_points;
@@ -125,12 +145,34 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
     for (auto t = initial_timestamp + 1; t < candidates_list.size(); ++t)
     {
 
-        const bool gap_in_trace = [&, use_timestamps]() {
-            // use temporal information if available to determine a split
+        const auto step_time = [&] {
             if (use_timestamps)
             {
-                return trace_timestamps[t] - trace_timestamps[prev_unbroken_timestamps.back()] >
-                       max_broken_time;
+                return trace_timestamps[t] - trace_timestamps[prev_unbroken_timestamps.back()];
+            }
+            else
+            {
+                return 1u;
+            }
+        }();
+
+        const auto max_distance_delta = [&] {
+            if (use_timestamps)
+            {
+                return step_time * facade.GetMapMatchingMaxSpeed();
+            }
+            else
+            {
+                return MAX_DISTANCE_DELTA;
+            }
+        }();
+
+        const bool gap_in_trace = [&]() {
+            // use temporal information if available to determine a split
+            // but do not determine split by timestamps if wasn't asked about it
+            if (use_timestamps && allow_splitting)
+            {
+                return step_time > max_broken_time;
             }
             else
             {
@@ -157,9 +199,9 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
 
             const auto haversine_distance = util::coordinate_calculation::haversineDistance(
                 prev_coordinate, current_coordinate);
-            // assumes minumum of 0.1 m/s
-            const int duration_upper_bound =
-                ((haversine_distance + max_distance_delta) * 0.25) * 10;
+            // assumes minumum of 4 m/s
+            const EdgeWeight weight_upper_bound =
+                ((haversine_distance + max_distance_delta) / 4.) * facade.GetWeightMultiplier();
 
             // compute d_t for this timestamp and the next one
             for (const auto s : util::irange<std::size_t>(0UL, prev_viterbi.size()))
@@ -178,33 +220,14 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
                         continue;
                     }
 
-                    forward_heap.Clear();
-                    reverse_heap.Clear();
-
-                    double network_distance;
-                    if (facade->GetCoreSize() > 0)
-                    {
-                        forward_core_heap.Clear();
-                        reverse_core_heap.Clear();
-                        network_distance = super::GetNetworkDistanceWithCore(
-                            facade,
-                            forward_heap,
-                            reverse_heap,
-                            forward_core_heap,
-                            reverse_core_heap,
-                            prev_unbroken_timestamps_list[s].phantom_node,
-                            current_timestamps_list[s_prime].phantom_node,
-                            duration_upper_bound);
-                    }
-                    else
-                    {
-                        network_distance = super::GetNetworkDistance(
-                            facade,
-                            forward_heap,
-                            reverse_heap,
-                            prev_unbroken_timestamps_list[s].phantom_node,
-                            current_timestamps_list[s_prime].phantom_node);
-                    }
+                    double network_distance =
+                        getNetworkDistance(engine_working_data,
+                                           facade,
+                                           forward_heap,
+                                           reverse_heap,
+                                           prev_unbroken_timestamps_list[s].phantom_node,
+                                           current_timestamps_list[s_prime].phantom_node,
+                                           weight_upper_bound);
 
                     // get distance diff between loc1/2 and locs/s_prime
                     const auto d_t = std::abs(network_distance - haversine_distance);
@@ -300,6 +323,7 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
         {
             ++sub_matching_begin;
         }
+        const auto sub_matching_last_timestamp = parent_timestamp_index;
 
         // matchings that only consist of one candidate are invalid
         if (parent_timestamp_index - sub_matching_begin + 1 < 2)
@@ -319,12 +343,8 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
         std::deque<std::pair<std::size_t, std::size_t>> reconstructed_indices;
         while (parent_timestamp_index > sub_matching_begin)
         {
-            if (model.breakage[parent_timestamp_index])
-            {
-                continue;
-            }
-
             reconstructed_indices.emplace_front(parent_timestamp_index, parent_candidate_index);
+            model.viterbi_reachable[parent_timestamp_index][parent_candidate_index] = true;
             const auto &next = model.parents[parent_timestamp_index][parent_candidate_index];
             // make sure we can never get stuck in this loop
             if (parent_timestamp_index == next.first)
@@ -335,10 +355,32 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
             parent_candidate_index = next.second;
         }
         reconstructed_indices.emplace_front(parent_timestamp_index, parent_candidate_index);
+        model.viterbi_reachable[parent_timestamp_index][parent_candidate_index] = true;
         if (reconstructed_indices.size() < 2)
         {
             sub_matching_begin = sub_matching_end;
             continue;
+        }
+
+        // fill viterbi reachability matrix
+        for (const auto s_last :
+             util::irange<std::size_t>(0UL, model.viterbi[sub_matching_last_timestamp].size()))
+        {
+            parent_timestamp_index = sub_matching_last_timestamp;
+            parent_candidate_index = s_last;
+            while (parent_timestamp_index > sub_matching_begin)
+            {
+                if (model.viterbi_reachable[parent_timestamp_index][parent_candidate_index] ||
+                    model.pruned[parent_timestamp_index][parent_candidate_index])
+                {
+                    break;
+                }
+                model.viterbi_reachable[parent_timestamp_index][parent_candidate_index] = true;
+                const auto &next = model.parents[parent_timestamp_index][parent_candidate_index];
+                parent_timestamp_index = next.first;
+                parent_candidate_index = next.second;
+            }
+            model.viterbi_reachable[parent_timestamp_index][parent_candidate_index] = true;
         }
 
         auto matching_distance = 0.0;
@@ -352,6 +394,13 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
 
             matching.indices.push_back(timestamp_index);
             matching.nodes.push_back(candidates_list[timestamp_index][location_index].phantom_node);
+            auto const routes_count =
+                std::accumulate(model.viterbi_reachable[timestamp_index].begin(),
+                                model.viterbi_reachable[timestamp_index].end(),
+                                0);
+            BOOST_ASSERT(routes_count > 0);
+            // we don't count the current route in the "alternatives_count" parameter
+            matching.alternatives_count.push_back(routes_count - 1);
             matching_distance += model.path_distances[timestamp_index][location_index];
         }
         util::for_each_pair(
@@ -370,6 +419,33 @@ operator()(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
 
     return sub_matchings;
 }
+
+template SubMatchingList
+mapMatching(SearchEngineData<ch::Algorithm> &engine_working_data,
+            const datafacade::ContiguousInternalMemoryDataFacade<ch::Algorithm> &facade,
+            const CandidateLists &candidates_list,
+            const std::vector<util::Coordinate> &trace_coordinates,
+            const std::vector<unsigned> &trace_timestamps,
+            const std::vector<boost::optional<double>> &trace_gps_precision,
+            const bool allow_splitting);
+
+template SubMatchingList
+mapMatching(SearchEngineData<corech::Algorithm> &engine_working_data,
+            const datafacade::ContiguousInternalMemoryDataFacade<corech::Algorithm> &facade,
+            const CandidateLists &candidates_list,
+            const std::vector<util::Coordinate> &trace_coordinates,
+            const std::vector<unsigned> &trace_timestamps,
+            const std::vector<boost::optional<double>> &trace_gps_precision,
+            const bool allow_splitting);
+
+template SubMatchingList
+mapMatching(SearchEngineData<mld::Algorithm> &engine_working_data,
+            const datafacade::ContiguousInternalMemoryDataFacade<mld::Algorithm> &facade,
+            const CandidateLists &candidates_list,
+            const std::vector<util::Coordinate> &trace_coordinates,
+            const std::vector<unsigned> &trace_timestamps,
+            const std::vector<boost::optional<double>> &trace_gps_precision,
+            const bool allow_splitting);
 
 } // namespace routing_algorithms
 } // namespace engine

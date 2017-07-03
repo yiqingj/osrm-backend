@@ -58,8 +58,8 @@ int main(int argc, const char *argv[])
         const auto distance = route.values["distance"].get<json::Number>().value;
         const auto duration = route.values["duration"].get<json::Number>().value;
 
-        // Warn users if extract does not contain the default Berlin coordinates from above
-        if (distance == 0 or duration == 0)
+        // Warn users if extract does not contain the default coordinates from above
+        if (distance == 0 || duration == 0)
         {
             std::cout << "Note: distance or duration is zero. ";
             std::cout << "You are probably doing a query outside of the OSM extract.\n\n";

@@ -1,6 +1,8 @@
 #ifndef GEOMETRY_COMPRESSOR_HPP_
 #define GEOMETRY_COMPRESSOR_HPP_
 
+#include "extractor/segment_data_container.hpp"
+
 #include "util/typedefs.hpp"
 
 #include <unordered_map>
@@ -19,9 +21,9 @@ class CompressedEdgeContainer
     struct OnewayCompressedEdge
     {
       public:
-        NodeID node_id;      // refers to an internal node-based-node
-        EdgeWeight weight;   // the weight of the edge leading to this node
-        EdgeWeight duration; // the duration of the edge leading to this node
+        NodeID node_id;           // refers to an internal node-based-node
+        SegmentWeight weight;     // the weight of the edge leading to this node
+        SegmentDuration duration; // the duration of the edge leading to this node
     };
 
     using OnewayEdgeBucket = std::vector<OnewayCompressedEdge>;
@@ -33,13 +35,13 @@ class CompressedEdgeContainer
                       const NodeID target_node,
                       const EdgeWeight weight1,
                       const EdgeWeight weight2,
-                      const EdgeWeight duration1,
-                      const EdgeWeight duration2);
+                      const EdgeDuration duration1,
+                      const EdgeDuration duration2);
 
     void AddUncompressedEdge(const EdgeID edge_id,
                              const NodeID target_node,
-                             const EdgeWeight weight,
-                             const EdgeWeight duration);
+                             const SegmentWeight weight,
+                             const SegmentWeight duration);
 
     void InitializeBothwayVector();
     unsigned ZipEdges(const unsigned f_edge_pos, const unsigned r_edge_pos);
@@ -48,7 +50,6 @@ class CompressedEdgeContainer
     bool HasZippedEntryForForwardID(const EdgeID edge_id) const;
     bool HasZippedEntryForReverseID(const EdgeID edge_id) const;
     void PrintStatistics() const;
-    void SerializeInternalVector(const std::string &path) const;
     unsigned GetPositionForID(const EdgeID edge_id) const;
     unsigned GetZippedPositionForForwardID(const EdgeID edge_id) const;
     unsigned GetZippedPositionForReverseID(const EdgeID edge_id) const;
@@ -58,21 +59,24 @@ class CompressedEdgeContainer
     NodeID GetLastEdgeTargetID(const EdgeID edge_id) const;
     NodeID GetLastEdgeSourceID(const EdgeID edge_id) const;
 
+    // Invalidates the internal storage
+    std::unique_ptr<SegmentDataContainer> ToSegmentData();
+
   private:
+    SegmentWeight ClipWeight(const SegmentWeight weight);
+    SegmentDuration ClipDuration(const SegmentDuration duration);
+
     int free_list_maximum = 0;
+    std::atomic_size_t clipped_weights{0};
+    std::atomic_size_t clipped_durations{0};
 
     void IncreaseFreeList();
     std::vector<OnewayEdgeBucket> m_compressed_oneway_geometries;
-    std::vector<unsigned> m_compressed_geometry_index;
-    std::vector<NodeID> m_compressed_geometry_nodes;
-    std::vector<EdgeWeight> m_compressed_geometry_fwd_weights;
-    std::vector<EdgeWeight> m_compressed_geometry_rev_weights;
-    std::vector<EdgeWeight> m_compressed_geometry_fwd_durations;
-    std::vector<EdgeWeight> m_compressed_geometry_rev_durations;
     std::vector<unsigned> m_free_list;
     std::unordered_map<EdgeID, unsigned> m_edge_id_to_list_index_map;
     std::unordered_map<EdgeID, unsigned> m_forward_edge_id_to_zipped_index_map;
     std::unordered_map<EdgeID, unsigned> m_reverse_edge_id_to_zipped_index_map;
+    std::unique_ptr<SegmentDataContainer> segment_data;
 };
 }
 }

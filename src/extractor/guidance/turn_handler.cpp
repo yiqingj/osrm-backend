@@ -111,12 +111,12 @@ std::size_t TurnHandler::Fork::getLeftIndex() const
 }
 
 TurnHandler::TurnHandler(const util::NodeBasedDynamicGraph &node_based_graph,
-                         const std::vector<QueryNode> &node_info_list,
+                         const std::vector<util::Coordinate> &coordinates,
                          const util::NameTable &name_table,
                          const SuffixTable &street_name_suffix_table,
                          const IntersectionGenerator &intersection_generator)
     : IntersectionHandler(node_based_graph,
-                          node_info_list,
+                          coordinates,
                           name_table,
                           street_name_suffix_table,
                           intersection_generator)
@@ -705,9 +705,8 @@ void TurnHandler::handleDistinctConflict(const EdgeID via_edge,
         const auto left_classification = node_based_graph.GetEdgeData(left.eid).road_classification;
         const auto right_classification =
             node_based_graph.GetEdgeData(right.eid).road_classification;
-        if (canBeSeenAsFork(left_classification, right_classification))
-            assignFork(via_edge, left, right);
-        else if (left_classification.GetPriority() > right_classification.GetPriority())
+
+        if (left_classification.GetPriority() > right_classification.GetPriority())
         {
             // FIXME this should possibly know about the actual roads?
             // here we don't know about the intersection size. To be on the save side,
@@ -726,6 +725,7 @@ void TurnHandler::handleDistinctConflict(const EdgeID via_edge,
             right.instruction = {findBasicTurnType(via_edge, right),
                                  DirectionModifier::SlightRight};
         }
+        return;
     }
     const auto left_type = findBasicTurnType(via_edge, left);
     const auto right_type = findBasicTurnType(via_edge, right);

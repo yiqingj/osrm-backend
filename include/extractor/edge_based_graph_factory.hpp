@@ -5,23 +5,29 @@
 
 #include "extractor/compressed_edge_container.hpp"
 #include "extractor/edge_based_edge.hpp"
-#include "extractor/edge_based_node.hpp"
+#include "extractor/edge_based_node_segment.hpp"
 #include "extractor/extraction_turn.hpp"
+#include "extractor/guidance/turn_analysis.hpp"
+#include "extractor/guidance/turn_instruction.hpp"
+#include "extractor/guidance/turn_lane_types.hpp"
+#include "extractor/nbg_to_ebg.hpp"
+#include "extractor/node_data_container.hpp"
 #include "extractor/original_edge_data.hpp"
+#include "extractor/packed_osm_ids.hpp"
 #include "extractor/profile_properties.hpp"
 #include "extractor/query_node.hpp"
 #include "extractor/restriction_map.hpp"
 
-#include "extractor/guidance/turn_analysis.hpp"
-#include "extractor/guidance/turn_instruction.hpp"
-#include "extractor/guidance/turn_lane_types.hpp"
+#include "util/concurrent_id_map.hpp"
+#include "util/deallocating_vector.hpp"
 #include "util/guidance/bearing_class.hpp"
 #include "util/guidance/entry_class.hpp"
-
-#include "util/deallocating_vector.hpp"
 #include "util/name_table.hpp"
 #include "util/node_based_graph.hpp"
+#include "util/packed_vector.hpp"
 #include "util/typedefs.hpp"
+
+#include "storage/io.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -36,6 +42,9 @@
 
 #include <boost/filesystem/fstream.hpp>
 
+#include <tbb/concurrent_unordered_map.h>
+#include <tbb/concurrent_vector.h>
+
 namespace osrm
 {
 namespace extractor
@@ -45,48 +54,19 @@ class ScriptingEnvironment;
 
 namespace lookup
 {
-// Set to 1 byte alignment
-#pragma pack(push, 1)
-struct SegmentHeaderBlock
-{
-    std::uint32_t num_osm_nodes;
-    OSMNodeID previous_osm_node_id;
-};
-#pragma pack(pop)
-static_assert(sizeof(SegmentHeaderBlock) == 12, "SegmentHeaderBlock is not packed correctly");
-
-#pragma pack(push, 1)
-struct SegmentBlock
-{
-    OSMNodeID this_osm_node_id;
-    double segment_length;
-    EdgeWeight segment_weight;
-    EdgeWeight segment_duration;
-};
-#pragma pack(pop)
-static_assert(sizeof(SegmentBlock) == 24, "SegmentBlock is not packed correctly");
-
-#pragma pack(push, 1)
-struct TurnPenaltiesHeader
-{
-    //! the number of penalties in each block
-    std::uint64_t number_of_penalties;
-};
-#pragma pack(pop)
-static_assert(std::is_trivial<TurnPenaltiesHeader>::value, "TurnPenaltiesHeader is not trivial");
-static_assert(sizeof(TurnPenaltiesHeader) == 8, "TurnPenaltiesHeader is not packed correctly");
-
 #pragma pack(push, 1)
 struct TurnIndexBlock
 {
-    OSMNodeID from_id;
-    OSMNodeID via_id;
-    OSMNodeID to_id;
+    NodeID from_id;
+    NodeID via_id;
+    NodeID to_id;
 };
 #pragma pack(pop)
 static_assert(std::is_trivial<TurnIndexBlock>::value, "TurnIndexBlock is not trivial");
-static_assert(sizeof(TurnIndexBlock) == 24, "TurnIndexBlock is not packed correctly");
-}
+static_assert(sizeof(TurnIndexBlock) == 12, "TurnIndexBlock is not packed correctly");
+} // ns lookup
+
+struct NodeBasedGraphToEdgeBasedGraphMappingWriter; // fwd. decl
 
 class EdgeBasedGraphFactory
 {
@@ -99,25 +79,24 @@ class EdgeBasedGraphFactory
                                    const std::unordered_set<NodeID> &barrier_nodes,
                                    const std::unordered_set<NodeID> &traffic_lights,
                                    std::shared_ptr<const RestrictionMap> restriction_map,
-                                   const std::vector<QueryNode> &node_info_list,
+                                   const std::vector<util::Coordinate> &coordinates,
+                                   const extractor::PackedOSMIDs &osm_node_ids,
                                    ProfileProperties profile_properties,
                                    const util::NameTable &name_table,
-                                   std::vector<std::uint32_t> &turn_lane_offsets,
-                                   std::vector<guidance::TurnLaneType::Mask> &turn_lane_masks,
                                    guidance::LaneDescriptionMap &lane_description_map);
 
     void Run(ScriptingEnvironment &scripting_environment,
-             const std::string &original_edge_data_filename,
+             const std::string &turn_data_filename,
              const std::string &turn_lane_data_filename,
-             const std::string &edge_segment_lookup_filename,
              const std::string &turn_weight_penalties_filename,
              const std::string &turn_duration_penalties_filename,
              const std::string &turn_penalties_index_filename,
-             const bool generate_edge_lookup);
+             const std::string &cnbg_ebg_mapping_path);
 
     // The following get access functions destroy the content in the factory
     void GetEdgeBasedEdges(util::DeallocatingVector<EdgeBasedEdge> &edges);
-    void GetEdgeBasedNodes(std::vector<EdgeBasedNode> &nodes);
+    void GetEdgeBasedNodes(EdgeBasedNodeDataContainer &data_container);
+    void GetEdgeBasedNodeSegments(std::vector<EdgeBasedNodeSegment> &nodes);
     void GetStartPointMarkers(std::vector<bool> &node_is_startpoint);
     void GetEdgeBasedNodeWeights(std::vector<EdgeWeight> &output_node_weights);
 
@@ -152,11 +131,13 @@ class EdgeBasedGraphFactory
     std::vector<EdgeWeight> m_edge_based_node_weights;
 
     //! list of edge based nodes (compressed segments)
-    std::vector<EdgeBasedNode> m_edge_based_node_list;
+    std::vector<EdgeBasedNodeSegment> m_edge_based_node_segments;
+    EdgeBasedNodeDataContainer m_edge_based_node_container;
     util::DeallocatingVector<EdgeBasedEdge> m_edge_based_edge_list;
     EdgeID m_max_edge_id;
 
-    const std::vector<QueryNode> &m_node_info_list;
+    const std::vector<util::Coordinate> &m_coordinates;
+    const extractor::PackedOSMIDs &m_osm_node_ids;
     std::shared_ptr<util::NodeBasedDynamicGraph> m_node_based_graph;
     std::shared_ptr<RestrictionMap const> m_restriction_map;
 
@@ -167,33 +148,28 @@ class EdgeBasedGraphFactory
     ProfileProperties profile_properties;
 
     const util::NameTable &name_table;
-    std::vector<std::uint32_t> &turn_lane_offsets;
-    std::vector<guidance::TurnLaneType::Mask> &turn_lane_masks;
     guidance::LaneDescriptionMap &lane_description_map;
 
     unsigned RenumberEdges();
-    void GenerateEdgeExpandedNodes();
+
+    std::vector<NBGToEBG> GenerateEdgeExpandedNodes();
+
     void GenerateEdgeExpandedEdges(ScriptingEnvironment &scripting_environment,
                                    const std::string &original_edge_data_filename,
                                    const std::string &turn_lane_data_filename,
-                                   const std::string &edge_segment_lookup_filename,
                                    const std::string &turn_weight_penalties_filename,
                                    const std::string &turn_duration_penalties_filename,
-                                   const std::string &turn_penalties_index_filename,
-                                   const bool generate_edge_lookup);
+                                   const std::string &turn_penalties_index_filename);
 
-    void InsertEdgeBasedNode(const NodeID u, const NodeID v);
-
-    void FlushVectorToStream(std::ofstream &edge_data_file,
-                             std::vector<OriginalEdgeData> &original_edge_data_vector) const;
+    NBGToEBG InsertEdgeBasedNode(const NodeID u, const NodeID v);
 
     std::size_t restricted_turns_counter;
     std::size_t skipped_uturns_counter;
     std::size_t skipped_barrier_turns_counter;
 
-    std::unordered_map<util::guidance::BearingClass, BearingClassID> bearing_class_hash;
+    util::ConcurrentIDMap<util::guidance::BearingClass, BearingClassID> bearing_class_hash;
     std::vector<BearingClassID> bearing_class_by_node_based_node;
-    std::unordered_map<util::guidance::EntryClass, EntryClassID> entry_class_hash;
+    util::ConcurrentIDMap<util::guidance::EntryClass, EntryClassID> entry_class_hash;
 };
 } // namespace extractor
 } // namespace osrm

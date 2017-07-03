@@ -1,8 +1,11 @@
 #include "server/server.hpp"
+#include "util/exception_utils.hpp"
 #include "util/log.hpp"
+#include "util/meminfo.hpp"
 #include "util/version.hpp"
 
 #include "osrm/engine_config.hpp"
+#include "osrm/exception.hpp"
 #include "osrm/osrm.hpp"
 #include "osrm/storage_config.hpp"
 
@@ -48,6 +51,17 @@ const static unsigned INIT_OK_START_ENGINE = 0;
 const static unsigned INIT_OK_DO_NOT_START_ENGINE = 1;
 const static unsigned INIT_FAILED = -1;
 
+EngineConfig::Algorithm stringToAlgorithm(const std::string &algorithm)
+{
+    if (algorithm == "CH")
+        return EngineConfig::Algorithm::CH;
+    if (algorithm == "CoreCH")
+        return EngineConfig::Algorithm::CoreCH;
+    if (algorithm == "MLD")
+        return EngineConfig::Algorithm::MLD;
+    throw util::RuntimeError(algorithm, ErrorCode::UnknownAlgorithm, SOURCE_REF);
+}
+
 // generate boost::program_options object for the routing part
 inline unsigned generateServerProgramOptions(const int argc,
                                              const char *argv[],
@@ -56,6 +70,7 @@ inline unsigned generateServerProgramOptions(const int argc,
                                              int &ip_port,
                                              int &requested_num_threads,
                                              bool &use_shared_memory,
+                                             std::string &algorithm,
                                              bool &trial,
                                              int &max_locations_trip,
                                              int &max_locations_viaroute,
@@ -87,6 +102,9 @@ inline unsigned generateServerProgramOptions(const int argc,
         ("shared-memory,s",
          value<bool>(&use_shared_memory)->implicit_value(true)->default_value(false),
          "Load data from shared memory") //
+        ("algorithm,a",
+         value<std::string>(&algorithm)->default_value("CH"),
+         "Algorithm to use for the data. Can be CH, CoreCH, MLD.") //
         ("max-viaroute-size",
          value<int>(&max_locations_viaroute)->default_value(500),
          "Max. locations supported in viaroute query") //
@@ -178,6 +196,7 @@ int main(int argc, const char *argv[]) try
 
     EngineConfig config;
     boost::filesystem::path base_path;
+    std::string algorithm;
     const unsigned init_result = generateServerProgramOptions(argc,
                                                               argv,
                                                               base_path,
@@ -185,6 +204,7 @@ int main(int argc, const char *argv[]) try
                                                               ip_port,
                                                               requested_thread_num,
                                                               config.use_shared_memory,
+                                                              algorithm,
                                                               trial_run,
                                                               config.max_locations_trip,
                                                               config.max_locations_viaroute,
@@ -203,67 +223,20 @@ int main(int argc, const char *argv[]) try
     {
         config.storage_config = storage::StorageConfig(base_path);
     }
+    if (!config.use_shared_memory && !config.storage_config.IsValid())
+    {
+        util::Log(logERROR) << "Required files are missing, cannot continue";
+        return EXIT_FAILURE;
+    }
     if (!config.IsValid())
     {
         if (base_path.empty() != config.use_shared_memory)
         {
             util::Log(logWARNING) << "Path settings and shared memory conflicts.";
         }
-        else
-        {
-            if (!boost::filesystem::is_regular_file(config.storage_config.ram_index_path))
-            {
-                util::Log(logWARNING) << config.storage_config.ram_index_path << " is not found";
-            }
-            if (!boost::filesystem::is_regular_file(config.storage_config.file_index_path))
-            {
-                util::Log(logWARNING) << config.storage_config.file_index_path << " is not found";
-            }
-            if (!boost::filesystem::is_regular_file(config.storage_config.hsgr_data_path))
-            {
-                util::Log(logWARNING) << config.storage_config.hsgr_data_path << " is not found";
-            }
-            if (!boost::filesystem::is_regular_file(config.storage_config.nodes_data_path))
-            {
-                util::Log(logWARNING) << config.storage_config.nodes_data_path << " is not found";
-            }
-            if (!boost::filesystem::is_regular_file(config.storage_config.edges_data_path))
-            {
-                util::Log(logWARNING) << config.storage_config.edges_data_path << " is not found";
-            }
-            if (!boost::filesystem::is_regular_file(config.storage_config.core_data_path))
-            {
-                util::Log(logWARNING) << config.storage_config.core_data_path << " is not found";
-            }
-            if (!boost::filesystem::is_regular_file(config.storage_config.geometries_path))
-            {
-                util::Log(logWARNING) << config.storage_config.geometries_path << " is not found";
-            }
-            if (!boost::filesystem::is_regular_file(config.storage_config.timestamp_path))
-            {
-                util::Log(logWARNING) << config.storage_config.timestamp_path << " is not found";
-            }
-            if (!boost::filesystem::is_regular_file(config.storage_config.datasource_names_path))
-            {
-                util::Log(logWARNING) << config.storage_config.datasource_names_path
-                                      << " is not found";
-            }
-            if (!boost::filesystem::is_regular_file(config.storage_config.datasource_indexes_path))
-            {
-                util::Log(logWARNING) << config.storage_config.datasource_indexes_path
-                                      << " is not found";
-            }
-            if (!boost::filesystem::is_regular_file(config.storage_config.names_data_path))
-            {
-                util::Log(logWARNING) << config.storage_config.names_data_path << " is not found";
-            }
-            if (!boost::filesystem::is_regular_file(config.storage_config.properties_path))
-            {
-                util::Log(logWARNING) << config.storage_config.properties_path << " is not found";
-            }
-        }
         return EXIT_FAILURE;
     }
+    config.algorithm = stringToAlgorithm(algorithm);
 
     util::Log() << "starting up engines, " << OSRM_VERSION;
 
@@ -336,7 +309,7 @@ int main(int argc, const char *argv[]) try
         else
         {
             util::Log(logWARNING) << "Didn't exit within 2 seconds. Hard abort!";
-            server_task.reset(); // just kill it
+            std::exit(EXIT_FAILURE);
         }
     }
 
@@ -344,8 +317,14 @@ int main(int argc, const char *argv[]) try
     routing_server.reset();
     util::Log() << "shutdown completed";
 }
+catch (const osrm::RuntimeError &e)
+{
+    util::Log(logERROR) << e.what();
+    return e.GetCode();
+}
 catch (const std::bad_alloc &e)
 {
+    util::DumpMemoryStats();
     util::Log(logWARNING) << "[exception] " << e.what();
     util::Log(logWARNING) << "Please provide more memory or consider using a larger swapfile";
     return EXIT_FAILURE;

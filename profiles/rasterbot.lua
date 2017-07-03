@@ -1,6 +1,13 @@
 api_version = 1
 -- Rasterbot profile
 
+properties.force_split_edges = true
+
+-- Set to true if you need to call the node_function for every node.
+-- Generally can be left as false to avoid unnecessary Lua calls
+-- (which slow down pre-processing).
+properties.call_tagless_node_function      = false
+
 -- Minimalist node_ and way_functions in order to test source_ and segment_functions
 
 function node_function (node, result)
@@ -46,7 +53,7 @@ function segment_function (segment)
   local scaled_duration = segment.duration
 
   if sourceData.datum ~= invalid and targetData.datum ~= invalid then
-    local slope = math.abs(sourceData.datum - targetData.datum) / segment.distance
+    local slope = (targetData.datum - sourceData.datum) / segment.distance
     scaled_weight = scaled_weight / (1.0 - (slope * 5.0))
     scaled_duration = scaled_duration / (1.0 - (slope * 5.0))
     io.write("   slope: " .. slope .. "\n")

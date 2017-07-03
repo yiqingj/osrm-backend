@@ -22,18 +22,27 @@ Feature: Via points
         Given the contract extra arguments "--core 0.8"
         Given the node map
             """
-            a b c
+            a b c d
+              e f g
+                h i
+                  j
             """
 
         And the ways
             | nodes |
-            | abc   |
+            | abcd  |
+            | efg   |
+            | hi    |
+            | be    |
+            | cfh   |
+            | dgij  |
 
         When I route I should get
-            | waypoints | route           |
-            | a,b,c     | abc,abc,abc,abc |
-            | c,b,a     | abc,abc,abc,abc |
-            | c,b,a     | abc,abc,abc,abc |
+            | waypoints | route               |
+            | a,b,c     | abcd,abcd,abcd,abcd |
+            | c,b,a     | abcd,abcd,abcd,abcd |
+            | a,d,j     | abcd,abcd,dgij,dgij |
+            | j,d,a     | dgij,dgij,abcd,abcd |
 
     Scenario: Via point at a dead end
         Given the node map
@@ -70,9 +79,9 @@ Feature: Via points
             | dh    |
 
         When I route I should get
-            | waypoints | route                               |
-            | a,c,f     | ab,bcd,bcd,bcd,de,efg,efg           |
-            | a,c,f,h   | ab,bcd,bcd,bcd,de,efg,efg,efg,gh,gh |
+            | waypoints | route                       |
+            | a,c,f     | ab,bcd,bcd,de,efg           |
+            | a,c,f,h   | ab,bcd,bcd,de,efg,efg,gh,gh |
 
 
     Scenario: Duplicate via point
@@ -115,12 +124,12 @@ Feature: Via points
             | fa    | yes    |
 
         When I route I should get
-            | waypoints | route                                     | distance  |
-            | 1,3       | ab,bc,cd,cd                               |  400m +-1 |
-            | 3,1       | cd,de,ef,fa,ab,ab                         | 1000m +-1 |
-            | 1,2,3     | ab,bc,bc,bc,cd,cd                         |  400m +-1 |
-            | 1,3,2     | ab,bc,cd,cd,cd,de,ef,fa,ab,bc,bc          | 1600m +-1 |
-            | 3,2,1     | cd,de,ef,fa,ab,bc,bc,bc,cd,de,ef,fa,ab,ab | 2400m +-1 |
+            | waypoints | route                                  | distance  |
+            | 1,3       | ab,bc,cd                               |  400m +-1 |
+            | 3,1       | cd,de,ef,fa,ab,ab                      | 1000m +-1 |
+            | 1,2,3     | ab,bc,bc,cd                            |  400m +-1 |
+            | 1,3,2     | ab,bc,cd,cd,de,ef,fa,ab,bc             | 1600m +-1 |
+            | 3,2,1     | cd,de,ef,fa,ab,bc,bc,cd,de,ef,fa,ab,ab | 2400m +-1 |
 
     Scenario: Via points on ring on the same oneway
     # xa it to avoid only having a single ring, which cna trigger edge cases
@@ -215,34 +224,6 @@ Feature: Via points
             | a,d,c     | abc,bd,bd,bd,abc,abc |
             | c,d,a     | abc,bd,bd,bd,abc,abc |
 
-    # See issue #1896
-    Scenario: Via point at a dead end with barrier
-        Given the profile "car"
-        Given the node map
-            """
-            a b c
-              1
-              d
-
-
-            f e
-            """
-
-        And the nodes
-            | node | barrier |
-            | d    | bollard |
-
-        And the ways
-            | nodes |
-            | abc   |
-            | bd    |
-            | afed  |
-
-        When I route I should get
-            | waypoints | route                   |
-            | a,1,c     | abc,bd,bd,bd,bd,abc,abc |
-            | c,1,a     | abc,bd,bd,bd,bd,abc,abc |
-
     Scenario: Via points on ring on the same oneway, forces one of the vertices to be top node
         Given the node map
             """
@@ -260,11 +241,11 @@ Feature: Via points
             | da    | yes    |
 
         When I route I should get
-            | waypoints | route                      | distance   |
-            | 2,1       | ab,bc,cd,da,ab,ab          | 1100m +-1  |
-            | 4,3       | bc,cd,da,ab,bc,bc          | 1100m +-1  |
-            | 6,5       | cd,da,ab,bc,cd,cd          | 1100m +-1  |
-            | 8,7       | da,ab,bc,cd,da,da          | 1100m +-1  |
+            | waypoints | route          | distance   |
+            | 2,1       | ab,bc,cd,da,ab | 1100m +-1  |
+            | 4,3       | bc,cd,da,ab,bc | 1100m +-1  |
+            | 6,5       | cd,da,ab,bc,cd | 1100m +-1  |
+            | 8,7       | da,ab,bc,cd,da | 1100m +-1  |
 
     Scenario: Multiple Via points on ring on the same oneway, forces one of the vertices to be top node
         Given the node map
@@ -284,10 +265,10 @@ Feature: Via points
             | da    | yes    |
 
         When I route I should get
-            | waypoints | route                               | distance     |
-            | 3,2,1     | ab,bc,cd,da,ab,ab,ab,bc,cd,da,ab,ab | 3000m +-1    |
-            | 6,5,4     | bc,cd,da,ab,bc,bc,bc,cd,da,ab,bc,bc | 3000m +-1    |
-            | 9,8,7     | cd,da,ab,bc,cd,cd,cd,da,ab,bc,cd,cd | 3000m +-1    |
+            | waypoints | route                            | distance     |
+            | 3,2,1     | ab,bc,cd,da,ab,ab,ab,bc,cd,da,ab | 3000m +-1    |
+            | 6,5,4     | bc,cd,da,ab,bc,bc,bc,cd,da,ab,bc | 3000m +-1    |
+            | 9,8,7     | cd,da,ab,bc,cd,cd,cd,da,ab,bc,cd | 3000m +-1    |
 
     # See issue #2706
     # this case is currently broken. It simply works as put here due to staggered intersections triggering a name collapse.
@@ -340,6 +321,67 @@ Feature: Via points
             | ab    |
 
         When I route I should get
-            | waypoints | bearings   | route    | turns                    |
-            | 1,a       | 90,2 270,2 | ab,ab,ab | depart,turn uturn,arrive |
-            | 1,b       | 270,2 90,2 | ab,ab,ab | depart,turn uturn,arrive |
+            | waypoints | bearings   | route    | turns                        |
+            | 1,a       | 90,2 270,2 | ab,ab,ab | depart,continue uturn,arrive |
+            | 1,b       | 270,2 90,2 | ab,ab,ab | depart,continue uturn,arrive |
+
+    Scenario: Continue Straight in presence of Bearings
+        Given the node map
+            """
+            h - a 1 b -- g
+                |   |
+                |   |- 2 c - f
+                |        3
+                e ------ d - i
+                         |
+                         j
+            """
+
+        And the query options
+            | continue_straight | false |
+
+        And the ways
+            | nodes | oneway |
+            | ab    | no     |
+            | bc    | no     |
+            | cdea  | no     |
+            | ah    | yes    |
+            | bg    | yes    |
+            | cf    | yes    |
+            | di    | yes    |
+            | dj    | yes    |
+
+        When I route I should get
+            | waypoints | bearings               | route                           |
+            | 1,2,3     | 270,90 180,180 180,180 | ab,cdea,cdea,bc,bc,bc,cdea,cdea |
+
+    Scenario: Continue Straight in presence of Bearings
+        Given the node map
+            """
+            h - a 1 b -- g
+                |   |
+                |   |- 2 c - f
+                |        3
+                e ------ d - i
+                         |
+                         j
+            """
+
+        And the query options
+            | continue_straight | true |
+
+        And the ways
+            | nodes | oneway |
+            | ab    | no     |
+            | bc    | no     |
+            | cdea  | no     |
+            | ah    | yes    |
+            | bg    | yes    |
+            | cf    | yes    |
+            | di    | yes    |
+            | dj    | yes    |
+
+        When I route I should get
+            | waypoints | bearings               | route                                   |
+            | 1,2,3     | 270,90 180,180 180,180 | ab,cdea,cdea,bc,bc,bc,ab,cdea,cdea,cdea |
+

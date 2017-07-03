@@ -27,14 +27,13 @@ namespace guidance
 {
 
 // Intersection handlers deal with all issues related to intersections.
-// They assign appropriate turn operations to the TurnOperations.
 // This base class provides both the interface and implementations for
 // common functions.
 class IntersectionHandler
 {
   public:
     IntersectionHandler(const util::NodeBasedDynamicGraph &node_based_graph,
-                        const std::vector<QueryNode> &node_info_list,
+                        const std::vector<util::Coordinate> &coordinates,
                         const util::NameTable &name_table,
                         const SuffixTable &street_name_suffix_table,
                         const IntersectionGenerator &intersection_generator);
@@ -51,7 +50,7 @@ class IntersectionHandler
 
   protected:
     const util::NodeBasedDynamicGraph &node_based_graph;
-    const std::vector<QueryNode> &node_info_list;
+    const std::vector<util::Coordinate> &coordinates;
     const util::NameTable &name_table;
     const SuffixTable &street_name_suffix_table;
     const IntersectionGenerator &intersection_generator;
@@ -114,6 +113,8 @@ class IntersectionHandler
     // For this scenario returns intersection at `b` and `b`.
     boost::optional<IntersectionHandler::IntersectionViewAndNode>
     getNextIntersection(const NodeID at, const EdgeID via) const;
+
+    bool isSameName(const EdgeID source_edge_id, const EdgeID target_edge_id) const;
 };
 
 // Impl.
@@ -410,14 +411,11 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
             const auto &best_option_data =
                 node_based_graph.GetEdgeData(intersection[best_option].eid);
             const auto adjusted_distinction_ratio = [&]() {
-                // not allowed competitors are easily distinct
-                if (!intersection[index].entry_allowed)
-                    return 0.7 * DISTINCTION_RATIO;
-                // a bit less obvious are road classes
-                else if (in_way_data.road_classification == best_option_data.road_classification &&
-                         best_option_data.road_classification.GetPriority() <
-                             node_based_graph.GetEdgeData(intersection[index].eid)
-                                 .road_classification.GetPriority())
+                // obviousness by road classes
+                if (in_way_data.road_classification == best_option_data.road_classification &&
+                    best_option_data.road_classification.GetPriority() <
+                        node_based_graph.GetEdgeData(intersection[index].eid)
+                            .road_classification.GetPriority())
                     return 0.8 * DISTINCTION_RATIO;
                 // if road classes are the same, we use the full ratio
                 else

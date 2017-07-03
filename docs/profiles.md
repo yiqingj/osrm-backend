@@ -25,23 +25,100 @@ As you scroll down the file you'll see local variables, and then local functions
 
 `way_function` and `node_function` are the important functions which are called when extracting OpenStreetMap data with `osrm-extract`.
 
+The following global properties can be set in your profile:
+
+Attribute                     | Type     | Notes
+------------------------------|----------|----------------------------------------------------------------------------
+weight_name                   | String   | Name used in output for the routing weight property (default `'duration'`)
+weight_precision              | Unsigned | Decimal precision of edge weights (default `1`)
+left_hand_driving             | Boolean  | Are vehicles assumed to drive on the left? (used in guidance, default `false`)
+use_turn_restrictions         | Boolean  | Are turn instructions followed? (default `false`)
+continue_straight_at_waypoint | Boolean  | Must the route continue straight on at a via point, or are U-turns allowed? (default `true`)
+max_speed_for_map_matching    | Float    | Maximum vehicle speed to be assumed in matching (in m/s)
+max_turn_weight               | Float    | Maximum turn penalty weight
+force_split_edges             | Boolean  | True value forces a split of forward and backward edges of extracted ways and guarantees that `segment_function` will be called for all segments (default `false`)
+
 ## way_function
 
-Given an OpenStreetMap way, the way_function will either return nothing (meaning we are not going to route over this way at all), or it will set up a result hash to be returned. The most important thing it will do is set the value of `result.forward_speed` and `result.backward_speed` as a suitable integer value representing the speed for traversing the way.
+Given an OpenStreetMap way, the `way_function` will either return nothing (meaning we are not going to route over this way at all), or it will set up a result hash to be returned. The most important thing it will do is set the value of `result.forward_speed` and `result.backward_speed` as a suitable integer value representing the speed for traversing the way.
 
 All other calculations stem from that, including the returned timings in driving directions, but also, less directly, it feeds into the actual routing decisions the engine will take (a way with a slow traversal speed, may be less favoured than a way with fast traversal speed, but it depends how long it is, and... what it connects to in the rest of the network graph)
 
-Using the power of the scripting language you wouldn't typically see something as simple as a `result.forward_speed = 20` line within the way_function. Instead a way_function will examine the tagging (e.g. `way:get_value_by_key("highway")` and many others), process this information in various ways, calling other local functions, referencing the global variables and look-up hashes, before arriving at the result.
+Using the power of the scripting language you wouldn't typically see something as simple as a `result.forward_speed = 20` line within the `way_function`. Instead a `way_function` will examine the tagging (e.g. `way:get_value_by_key("highway")` and many others), process this information in various ways, calling other local functions, referencing the global variables and look-up hashes, before arriving at the result.
 
-## Guidance
+The following attributes can be set on the result in `way_function`:
+
+Attribute                               | Type     | Notes
+----------------------------------------|----------|--------------------------------------------------------------------------
+forward_speed                           | Float    | Speed on this way in km/h. Mandatory.
+backward_speed                          | Float    |  "   "
+forward_rate                            | Float    | Routing weight, expressed as meters/*weight* (e.g. for a fastest-route weighting, you would want this to be meters/second, so set it to forward_speed/3.6)
+backward_rate                           | Float    |  "   "
+forward_mode                            | Enum     | Mode of travel (e.g. `car`, `ferry`). Mandatory. Defined in `include/extractor/travel_mode.hpp`.
+backward_mode                           | Enum     |  "   "
+duration                                | Float    | Alternative setter for duration of the whole way in both directions
+weight                                  | Float    | Alternative setter for weight of the whole way in both directions
+turn_lanes_forward                      | String   | Directions for individual lanes (normalised OSM `turn:lanes` value)
+turn_lanes_backward                     | String   |  "   "
+forward_restricted                      | Boolean  | Is this a restricted access road? (e.g. private, or deliveries only; used to enable high turn penalty, so that way is only chosen for start/end of route)
+backward_restricted                     | Boolean  |  "   "
+is_startpoint                           | Boolean  | Can a journey start on this way? (e.g. ferry; if `false`, prevents snapping the start point to this way)
+roundabout                              | Boolean  | Is this part of a roundabout?
+circular                                | Boolean  | Is this part of a non-roundabout circular junction?
+name                                    | String   | Name of the way
+ref                                     | String   | Road number
+pronunciation                           | String   | Name pronunciation
+road_classification.motorway_class      | Boolean  | Guidance: way is a motorway
+road_classification.link_class          | Boolean  | Guidance: way is a slip/link road
+road_classification.road_priority_class | Enum     | Guidance: order in priority list. Defined in `include/extractor/guidance/road_classification.hpp`
+road_classification.may_be_ignored      | Boolean  | Guidance: way is non-highway
+road_classification.num_lanes           | Unsigned | Guidance: total number of lanes in way
+
+### Guidance
 
 The guidance parameters in profiles are currently a work in progress. They can and will change.
 Please be aware of this when using guidance configuration possibilities.
-
-### Road Classification
 
 Guidance uses road classes to decide on when/if to emit specific instructions and to discover which road is obvious when following a route.
 Classification uses three flags and a priority-category.
 The flags indicate whether a road is a motorway (required for on/off ramps), a link type (the ramps itself, if also a motorway) and whether a road may be omittted in considerations (is considered purely for connectivity).
 The priority-category influences the decision which road is considered the obvious choice and which roads can be seen as fork.
 Forks can be emitted between roads of similar priority category only. Obvious choices follow a major priority road, if the priority difference is large.
+
+## node_function
+
+The following attributes can be set on the result in `node_function`:
+
+Attribute       | Type    | Notes
+----------------|---------|-------------------------------------------------------
+barrier         | Boolean | Is it an impassable barrier?
+traffic_lights  | Boolean | Is it a traffic light (incurs delay in `turn_function`)?
+
+## segment_function
+
+The following attributes can be read and set on the result in `segment_function`:
+
+Attribute          | Read/write? | Type    | Notes
+-------------------|-------------|---------|------------------------------------------------------
+source.lon         | Read        | Float   | Co-ordinates of segment start
+source.lat         | Read        | Float   |  "   "
+target.lon         | Read        | Float   | Co-ordinates of segment end
+target.lat         | Read        | Float   |  "   "
+target.distance    | Read        | Float   | Length of segment
+weight             | Read/write  | Float   | Routing weight for this segment
+duration           | Read/write  | Float   | Duration for this segment
+
+## turn_function
+
+The following attributes can be read and set on the result in `turn_function`:
+
+Attribute          | Read/write? | Type    | Notes
+-------------------|-------------|---------|------------------------------------------------------
+direction_modifier | Read        | Enum    | Geometry of turn. Defined in `include/extractor/guidance/turn_instruction.hpp`
+turn_type          | Read        | Enum    | Priority of turn. Defined in `include/extractor/guidance/turn_instruction.hpp`
+has_traffic_light  | Read        | Boolean | Is a traffic light present at this turn?
+source_restricted  | Read        | Boolean | Is it from a restricted access road? (See definition in `way_function`)
+target_restricted  | Read        | Boolean | Is it to a restricted access road? (See definition in `way_function`)
+angle              | Read        | Float   | Angle of turn in degrees (`0-360`: `0`=u-turn, `180`=straight on)
+duration           | Read/write  | Float   | Penalty to be applied for this turn (duration in deciseconds)
+weight             | Read/write  | Float   | Penalty to be applied for this turn (routing weight)

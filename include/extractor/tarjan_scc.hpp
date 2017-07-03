@@ -46,21 +46,21 @@ template <typename GraphT> class TarjanSCC
 
     std::vector<unsigned> components_index;
     std::vector<NodeID> component_size_vector;
-    std::shared_ptr<const GraphT> m_graph;
+    const GraphT &m_graph;
     std::size_t size_one_counter;
 
   public:
-    TarjanSCC(std::shared_ptr<const GraphT> graph)
-        : components_index(graph->GetNumberOfNodes(), SPECIAL_NODEID), m_graph(graph),
+    TarjanSCC(const GraphT &graph)
+        : components_index(graph.GetNumberOfNodes(), SPECIAL_NODEID), m_graph(graph),
           size_one_counter(0)
     {
-        BOOST_ASSERT(m_graph->GetNumberOfNodes() > 0);
+        BOOST_ASSERT(m_graph.GetNumberOfNodes() > 0);
     }
 
     void Run()
     {
         TIMER_START(SCC_RUN);
-        const NodeID max_node_id = m_graph->GetNumberOfNodes();
+        const NodeID max_node_id = m_graph.GetNumberOfNodes();
 
         // The following is a hack to distinguish between stuff that happens
         // before the recursive call and stuff that happens after
@@ -69,6 +69,7 @@ template <typename GraphT> class TarjanSCC
         std::stack<NodeID> tarjan_stack;
         std::vector<TarjanNode> tarjan_node_list(max_node_id);
         unsigned component_index = 0, size_of_current_component = 0;
+        unsigned large_component_count = 0;
         unsigned index = 0;
         std::vector<bool> processing_node_before_recursion(max_node_id, true);
         for (const NodeID node : util::irange(0u, max_node_id))
@@ -105,9 +106,9 @@ template <typename GraphT> class TarjanSCC
                     tarjan_node_list[v].on_stack = true;
                     ++index;
 
-                    for (const auto current_edge : m_graph->GetAdjacentEdgeRange(v))
+                    for (const auto current_edge : m_graph.GetAdjacentEdgeRange(v))
                     {
-                        const auto vprime = m_graph->GetTarget(current_edge);
+                        const auto vprime = m_graph.GetTarget(current_edge);
 
                         if (SPECIAL_NODEID == tarjan_node_list[vprime].index)
                         {
@@ -146,8 +147,9 @@ template <typename GraphT> class TarjanSCC
 
                         if (size_of_current_component > 1000)
                         {
-                            util::Log() << "large component [" << component_index
-                                        << "]=" << size_of_current_component;
+                            ++large_component_count;
+                            util::Log(logDEBUG) << "large component [" << component_index
+                                                << "]=" << size_of_current_component;
                         }
 
                         ++component_index;
@@ -158,6 +160,8 @@ template <typename GraphT> class TarjanSCC
         }
 
         TIMER_STOP(SCC_RUN);
+        util::Log() << "Found " << component_index << " SCC (" << large_component_count
+                    << " large, " << (component_index - large_component_count) << " small)";
         util::Log() << "SCC run took: " << TIMER_MSEC(SCC_RUN) / 1000. << "s";
 
         size_one_counter = std::count_if(component_size_vector.begin(),

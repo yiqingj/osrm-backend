@@ -16,9 +16,12 @@ module.exports = function () {
 
                     var headers = new Set(table.raw()[0]);
 
+                    got.code = 'unknown';
                     if (res.body.length) {
                         json = JSON.parse(res.body);
+                        got.code = json.code;
                     }
+
 
                     if (headers.has('status')) {
                         got.status = json.status.toString();
@@ -33,13 +36,14 @@ module.exports = function () {
                         got['#'] = row['#'];
                     }
 
-                    var subMatchings = [],
+                    var subMatchings = [''],
                         turns = '',
                         route = '',
                         duration = '',
                         annotation = '',
                         geometry = '',
-                        OSMIDs = '';
+                        OSMIDs = '',
+                        alternatives = '';
 
 
                     if (res.statusCode === 200) {
@@ -95,6 +99,10 @@ module.exports = function () {
                             if (json.matchings.length != 1) throw new Error('*** Checking geometry only supported for matchings with one subtrace');
                             geometry = json.matchings[0].geometry;
                         }
+
+                        if (headers.has('alternatives')) {
+                            alternatives = this.alternativesList(json);
+                        }
                     }
 
                     if (headers.has('turns')) {
@@ -137,6 +145,9 @@ module.exports = function () {
                         got['OSM IDs'] = OSMIDs;
                     }
 
+                    if (headers.has('alternatives')) {
+                        got['alternatives'] = alternatives;
+                    }
                     var ok = true;
                     var encodedResult = '',
                         extendedTarget = '';
@@ -167,8 +178,7 @@ module.exports = function () {
 
                     if (headers.has('matchings')) {
                         if (subMatchings.length != row.matchings.split(',').length) {
-                            ok = false;
-                            cb(new Error('*** table matchings and api response are not the same'));
+                            return cb(new Error('*** table matchings and api response are not the same'));
                         }
 
                         row.matchings.split(',').forEach((sub, si) => {
@@ -218,7 +228,7 @@ module.exports = function () {
                         for (var i=0; i<row.trace.length; i++) {
                             var n = row.trace[i],
                                 node = this.findNodeByName(n);
-                            if (!node) throw new Error(util.format('*** unknown waypoint node "%s"'), n);
+                            if (!node) throw new Error(util.format('*** unknown waypoint node "%s"', n));
                             trace.push(node);
                         }
                         if (row.timestamps) {

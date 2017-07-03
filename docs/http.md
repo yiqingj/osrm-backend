@@ -15,7 +15,7 @@ GET /{service}/{version}/{profile}/{coordinates}[.{format}]?option=value&option=
 | `service` | One of the following values: [`route`](#route-service), [`nearest`](#nearest-service), [`table`](#table-service), [`match`](#match-service), [`trip`](#trip-service), [`tile`](#tile-service) |
 | `version` | Version of the protocol implemented by the service. `v1` for all OSRM 5.x installations |
 | `profile` | Mode of transportation, is determined statically by the Lua profile that is used to prepare the data using `osrm-extract`. Typically `car`, `bike` or `foot` if using one of the supplied profiles. |
-| `coordinates`| String of format `{longitude},{latitude};{longitude},{latitude}[;{longitude},{latitude} ...]` or `polyline({polyline})`. |
+| `coordinates`| String of format `{longitude},{latitude};{longitude},{latitude}[;{longitude},{latitude} ...]` or `polyline({polyline}) or polyline6({polyline6})`. |
 | `format`| Only `json` is supported at the moment. This parameter is optional and defaults to `json`. |
 
 Passing any `option=value` is optional. `polyline` follows Google's polyline format with precision 5 by default and can be generated using [this package](https://www.npmjs.com/package/polyline).
@@ -30,6 +30,7 @@ To pass parameters to each location some options support an array like encoding:
 |radiuses        |`{radius};{radius}[;{radius} ...]`                      |Limits the search to given radius in meters.                                                           |
 |generate\_hints |`true` (default), `false`                               |Adds a Hint to the response which can be used in subsequent requests, see `hints` parameter.           |
 |hints           |`{hint};{hint}[;{hint} ...]`                            |Hint from previous request to derive position in street network.                                       |
+|approaches      |`{approach};{approach}[;{approach} ...]`                |Keep waypoints on curb side.                                                                           |
 
 Where the elements follow the following format:
 
@@ -38,6 +39,7 @@ Where the elements follow the following format:
 |bearing     |`{value},{range}` `integer 0 .. 360,integer 0 .. 180`   |
 |radius      |`double >= 0` or `unlimited` (default)                  |
 |hint        |Base64 `string`                                         |
+|approach    |`curb` or `unrestricted` (default)                      |
 
 ```
 {option}={element};{element}[;{element} ... ]
@@ -171,7 +173,7 @@ In addition to the [general options](#general-options) the following options are
 |Option      |Values                                       |Description                                                                    |
 |------------|---------------------------------------------|-------------------------------------------------------------------------------|
 |alternatives|`true`, `false` (default)                    |Search for alternative routes and return as well.\*                            |
-|steps       |`true`, `false` (default)                    |Return route steps for each route leg                                          |
+|steps       |`true`, `false` (default)                    |Returned route steps for each route leg                                        |
 |annotations |`true`, `false` (default), `nodes`, `distance`, `duration`, `datasources`, `weight`, `speed`  |Returns additional metadata for each coordinate along the route geometry.      |
 |geometries  |`polyline` (default), `polyline6`, `geojson` |Returned route geometry format (influences overview and per step)              |
 |overview    |`simplified` (default), `full`, `false`      |Add overview geometry either full, simplified according to highest zoom level it could be display on, or not at all.|
@@ -247,7 +249,7 @@ curl 'http://router.project-osrm.org/table/v1/driving/polyline(egs_Iq_aqAppHzbHu
 
 - `code` if the request was successful `Ok` otherwise see the service dependent and general status codes.
 - `durations` array of arrays that stores the matrix in row-major order. `durations[i][j]` gives the travel time from
-  the i-th waypoint to the j-th waypoint. Values are given in seconds.
+  the i-th waypoint to the j-th waypoint. Values are given in seconds. Can be `null` if no route between `i` and `j` can be found.
 - `sources` array of `Waypoint` objects describing all sources in order
 - `destinations` array of `Waypoint` objects describing all destinations in order
 
@@ -273,12 +275,14 @@ In addition to the [general options](#general-options) the following options are
 
 |Option      |Values                                          |Description                                                                               |
 |------------|------------------------------------------------|------------------------------------------------------------------------------------------|
-|steps       |`true`, `false` (default)                       |Return route steps for each route                                                         |
+|steps       |`true`, `false` (default)                       |Returned route steps for each route                                                       |
 |geometries  |`polyline` (default), `polyline6`, `geojson`    |Returned route geometry format (influences overview and per step)                         |
 |annotations |`true`, `false` (default), `nodes`, `distance`, `duration`, `datasources`, `weight`, `speed`  |Returns additional metadata for each coordinate along the route geometry.                 |
 |overview    |`simplified` (default), `full`, `false`         |Add overview geometry either full, simplified according to highest zoom level it could be display on, or not at all.|
 |timestamps  |`{timestamp};{timestamp}[;{timestamp} ...]`     |Timestamps for the input locations in seconds since UNIX epoch. Timestamps need to be monotonically increasing. |
 |radiuses    |`{radius};{radius}[;{radius} ...]`              |Standard deviation of GPS precision used for map matching. If applicable use GPS accuracy.|
+|gaps        |`split` (default), `ignore`                     |Allows the input track splitting based on huge timestamp gaps between points.             |
+|tidy        |`true`, `false` (default)                       |Allows the input track modification to obtain better matching quality for noisy tracks.   |
 
 |Parameter   |Values                             |
 |------------|-----------------------------------|
@@ -298,6 +302,7 @@ The area to search is chosen such that the correct candidate should be considere
   Each `Waypoint` object has the following additional properties:
   - `matchings_index`: Index to the `Route` object in `matchings` the sub-trace was matched to.
   - `waypoint_index`: Index of the waypoint inside the matched route.
+  - `alternatives_count`: Number of probable alternative matchings for this trace point. A value of zero indicate that this point was matched unambiguously. Split the trace at these points for incremental map matching.
 - `matchings`: An array of `Route` objects that assemble the trace. Each `Route` object has the following additional properties:
   - `confidence`: Confidence of the matching. `float` value between 0 and 1. 1 is very confident that the matching is correct.
 
@@ -313,7 +318,7 @@ All other properties might be undefined.
 
 The trip plugin solves the Traveling Salesman Problem using a greedy heuristic (farthest-insertion algorithm) for 10 or more waypoints and uses brute force for less than 10 waypoints.
 The returned path does not have to be the fastest path. As TSP is NP-hard it only returns an approximation.
-Note that all input coordinates have to be connected for the trip service to work. 
+Note that all input coordinates have to be connected for the trip service to work.
 
 ```endpoint
 GET /trip/v1/{profile}/{coordinates}?roundtrip={true|false}&source{any|first}&destination{any|last}&steps={true|false}&geometries={polyline|polyline6|geojson}&overview={simplified|full|false}&annotations={true|false}'
@@ -323,17 +328,17 @@ In addition to the [general options](#general-options) the following options are
 
 |Option      |Values                                          |Description                                                                |
 |------------|------------------------------------------------|---------------------------------------------------------------------------|
-|roundtrip   |`true` (default), `false`                       |Return route is a roundtrip                                                |
-|source      |`any` (default), `first`                        |Return route starts at `any` or `first` coordinate                         |
-|destination |`any` (default), `last`                         |Return route ends at `any` or `last` coordinate                            |
-|steps       |`true`, `false` (default)                       |Return route instructions for each trip                                    |
+|roundtrip   |`true` (default), `false`                       |Returned route is a roundtrip (route returns to first location)            |
+|source      |`any` (default), `first`                        |Returned route starts at `any` or `first` coordinate                       |
+|destination |`any` (default), `last`                         |Returned route ends at `any` or `last` coordinate                          |
+|steps       |`true`, `false` (default)                       |Returned route instructions for each trip                                  |
 |annotations |`true`, `false` (default), `nodes`, `distance`, `duration`, `datasources`, `weight`, `speed` |Returns additional metadata for each coordinate along the route geometry.  |
 |geometries  |`polyline` (default), `polyline6`, `geojson`    |Returned route geometry format (influences overview and per step)          |
 |overview    |`simplified` (default), `full`, `false`         |Add overview geometry either full, simplified according to highest zoom level it could be display on, or not at all.|
 
 **Fixing Start and End Points**
 
-It is possible to explicitely set the start or end coordinate of the trip. 
+It is possible to explicitely set the start or end coordinate of the trip.
 When source is set to `first`, the first coordinate is used as start coordinate of the trip in the output. When destination is set to `last`, the last coordinate will be used as destination of the trip in the returned output. If you specify `any`, any of the coordinates can be used as the first or last coordinate in the output.
 
 However, if `source=any&destination=any` the returned round-trip will still start at the first input coordinate by default.
@@ -343,7 +348,7 @@ Right now, the following combinations are possible:
 
 | roundtrip | source | destination | supported |
 | :-- | :-- | :-- | :-- |
-| true | first | last | **yes** | 
+| true | first | last | **yes** |
 | true | first | any | **yes** |
 | true | any | last | **yes** |
 | true | any | any | **yes** |
@@ -414,8 +419,10 @@ Vector tiles contain two layers:
 | `speed`      | `integer` | the speed on that road segment, in km/h  |
 | `is_small`   | `boolean` | whether this segment belongs to a small (< 1000 node) [strongly connected component](https://en.wikipedia.org/wiki/Strongly_connected_component) |
 | `datasource` | `string`  | the source for the speed value (normally `lua profile` unless you're using the [traffic update feature](https://github.com/Project-OSRM/osrm-backend/wiki/Traffic), in which case it contains the stem of the filename that supplied the speed value for this segment |
-| `duration`   | `float`   | how long this segment takes to traverse, in seconds |
+| `duration`   | `float`   | how long this segment takes to traverse, in seconds.  This value is to calculate the total route ETA. |
+| `weight  `   | `integer` | how long this segment takes to traverse, in units (may differ from `duration` when artificial biasing is applied in the Lua profiles).  ACTUAL ROUTING USES THIS VALUE. |
 | `name`       | `string`  | the name of the road this segment belongs to |
+| `rate`       | `float`   | the value of `length/weight` - analagous to `speed`, but using the `weight` value rather than `duration`, rounded to the nearest integer |
 
 `turns` layer:
 
@@ -424,6 +431,7 @@ Vector tiles contain two layers:
 | `bearing_in` | `integer` | the absolute bearing that approaches the intersection.  -180 to +180, 0 = North, 90 = East |
 | `turn_angle` | `integer` | the angle of the turn, relative to the `bearing_in`.  -180 to +180, 0 = straight ahead, 90 = 90-degrees to the right |
 | `cost`       | `float`   | the time we think it takes to make that turn, in seconds.  May be negative, depending on how the data model is constructed (some turns get a "bonus"). |
+| `weight`     | `float`   | the weight we think it takes to make that turn.  May be negative, depending on how the data model is constructed (some turns get a "bonus"). ACTUAL ROUTING USES THIS VALUE |
 
 
 ## Result objects

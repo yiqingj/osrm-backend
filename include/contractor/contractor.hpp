@@ -31,7 +31,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "contractor/contractor_config.hpp"
 #include "contractor/query_edge.hpp"
 #include "extractor/edge_based_edge.hpp"
-#include "extractor/edge_based_node.hpp"
+#include "extractor/edge_based_node_segment.hpp"
 #include "util/deallocating_vector.hpp"
 #include "util/typedefs.hpp"
 
@@ -65,22 +65,9 @@ class Contractor
                        std::vector<EdgeWeight> &&node_weights,
                        std::vector<bool> &is_core_node,
                        std::vector<float> &inout_node_levels) const;
-    void WriteCoreNodeMarker(std::vector<bool> &&is_core_node) const;
-    void WriteNodeLevels(std::vector<float> &&node_levels) const;
-    void ReadNodeLevels(std::vector<float> &contraction_order) const;
-    std::size_t
-    WriteContractedGraph(unsigned number_of_edge_based_nodes,
-                         const util::DeallocatingVector<QueryEdge> &contracted_edge_list);
-    void FindComponents(unsigned max_edge_id,
-                        const util::DeallocatingVector<extractor::EdgeBasedEdge> &edges,
-                        std::vector<extractor::EdgeBasedNode> &nodes) const;
 
   private:
     ContractorConfig config;
-
-    EdgeID LoadEdgeExpandedGraph(const ContractorConfig &config,
-                                 std::vector<extractor::EdgeBasedEdge> &edge_based_edge_list,
-                                 std::vector<EdgeWeight> &node_weights);
 };
 }
 }

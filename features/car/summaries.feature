@@ -5,7 +5,7 @@ Feature: Basic Routing
         Given the profile "car"
         Given a grid size of 500 meters
 
-    @smallest
+    @smallest @via
     Scenario: Summaries when routing on a simple network
         Given the node map
             """
@@ -60,8 +60,8 @@ Feature: Basic Routing
             | bc    |      | 101 |
 
         When I route I should get
-            | waypoints | route | summary   |
-            | a,c       | road, | road, 101 |
+            | waypoints | route  | summary   |
+            | a,c       | road,, | road, 101 |
 
      Scenario: Only Refs
         Given the node map

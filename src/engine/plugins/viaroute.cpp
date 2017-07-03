@@ -1,6 +1,6 @@
 #include "engine/plugins/viaroute.hpp"
 #include "engine/api/route_api.hpp"
-#include "engine/datafacade/datafacade_base.hpp"
+#include "engine/routing_algorithms.hpp"
 #include "engine/status.hpp"
 
 #include "util/for_each_pair.hpp"
@@ -22,16 +22,33 @@ namespace plugins
 {
 
 ViaRoutePlugin::ViaRoutePlugin(int max_locations_viaroute)
-    : shortest_path(heaps), alternative_path(heaps), direct_shortest_path(heaps),
-      max_locations_viaroute(max_locations_viaroute)
+    : max_locations_viaroute(max_locations_viaroute)
 {
 }
 
-Status ViaRoutePlugin::HandleRequest(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
-                                     const api::RouteParameters &route_parameters,
-                                     util::json::Object &json_result) const
+Status
+ViaRoutePlugin::HandleRequest(const datafacade::ContiguousInternalMemoryDataFacadeBase &facade,
+                              const RoutingAlgorithmsInterface &algorithms,
+                              const api::RouteParameters &route_parameters,
+                              util::json::Object &json_result) const
 {
     BOOST_ASSERT(route_parameters.IsValid());
+
+    if (!algorithms.HasShortestPathSearch() && route_parameters.coordinates.size() > 2)
+    {
+        return Error("NotImplemented",
+                     "Shortest path search is not implemented for the chosen search algorithm. "
+                     "Only two coordinates supported.",
+                     json_result);
+    }
+
+    if (!algorithms.HasDirectShortestPathSearch() && !algorithms.HasShortestPathSearch())
+    {
+        return Error(
+            "NotImplemented",
+            "Direct shortest path search is not implemented for the chosen search algorithm.",
+            json_result);
+    }
 
     if (max_locations_viaroute > 0 &&
         (static_cast<int>(route_parameters.coordinates.size()) > max_locations_viaroute))
@@ -48,7 +65,7 @@ Status ViaRoutePlugin::HandleRequest(const std::shared_ptr<const datafacade::Bas
         return Error("InvalidValue", "Invalid coordinate value.", json_result);
     }
 
-    auto phantom_node_pairs = GetPhantomNodes(*facade, route_parameters);
+    auto phantom_node_pairs = GetPhantomNodes(facade, route_parameters);
     if (phantom_node_pairs.size() != route_parameters.coordinates.size())
     {
         return Error("NoSegment",
@@ -60,55 +77,41 @@ Status ViaRoutePlugin::HandleRequest(const std::shared_ptr<const datafacade::Bas
 
     auto snapped_phantoms = SnapPhantomNodes(phantom_node_pairs);
 
-    const bool continue_straight_at_waypoint = route_parameters.continue_straight
-                                                   ? *route_parameters.continue_straight
-                                                   : facade->GetContinueStraightDefault();
-
-    InternalRouteResult raw_route;
-    auto build_phantom_pairs = [&raw_route, continue_straight_at_waypoint](
-        const PhantomNode &first_node, const PhantomNode &second_node) {
-        raw_route.segment_end_coordinates.push_back(PhantomNodes{first_node, second_node});
-        auto &last_inserted = raw_route.segment_end_coordinates.back();
-        // enable forward direction if possible
-        if (last_inserted.source_phantom.forward_segment_id.id != SPECIAL_SEGMENTID)
-        {
-            last_inserted.source_phantom.forward_segment_id.enabled |=
-                !continue_straight_at_waypoint;
-        }
-        // enable reverse direction if possible
-        if (last_inserted.source_phantom.reverse_segment_id.id != SPECIAL_SEGMENTID)
-        {
-            last_inserted.source_phantom.reverse_segment_id.enabled |=
-                !continue_straight_at_waypoint;
-        }
+    std::vector<PhantomNodes> start_end_nodes;
+    auto build_phantom_pairs = [&start_end_nodes](const PhantomNode &first_node,
+                                                  const PhantomNode &second_node) {
+        start_end_nodes.push_back(PhantomNodes{first_node, second_node});
     };
     util::for_each_pair(snapped_phantoms, build_phantom_pairs);
 
-    if (1 == raw_route.segment_end_coordinates.size())
+    api::RouteAPI route_api{facade, route_parameters};
+
+    InternalManyRoutesResult routes;
+
+    // Alternatives do not support vias, only direct s,t queries supported
+    // See the implementation notes and high-level outline.
+    // https://github.com/Project-OSRM/osrm-backend/issues/3905
+    if (1 == start_end_nodes.size() && algorithms.HasAlternativePathSearch() &&
+        route_parameters.alternatives)
     {
-        if (route_parameters.alternatives && facade->GetCoreSize() == 0)
-        {
-            alternative_path(facade, raw_route.segment_end_coordinates.front(), raw_route);
-        }
-        else
-        {
-            direct_shortest_path(facade, raw_route.segment_end_coordinates, raw_route);
-        }
+        routes = algorithms.AlternativePathSearch(start_end_nodes.front());
+    }
+    else if (1 == start_end_nodes.size() && algorithms.HasDirectShortestPathSearch())
+    {
+        routes = algorithms.DirectShortestPathSearch(start_end_nodes.front());
     }
     else
     {
-        shortest_path(facade,
-                      raw_route.segment_end_coordinates,
-                      route_parameters.continue_straight,
-                      raw_route);
+        routes = algorithms.ShortestPathSearch(start_end_nodes, route_parameters.continue_straight);
     }
 
     // we can only know this after the fact, different SCC ids still
     // allow for connection in one direction.
-    if (raw_route.is_valid())
+    BOOST_ASSERT(!routes.routes.empty());
+
+    if (routes.routes[0].is_valid())
     {
-        api::RouteAPI route_api{*facade, route_parameters};
-        route_api.MakeResponse(raw_route, json_result);
+        route_api.MakeResponse(routes, json_result);
     }
     else
     {

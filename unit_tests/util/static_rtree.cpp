@@ -1,5 +1,5 @@
 #include "util/static_rtree.hpp"
-#include "extractor/edge_based_node.hpp"
+#include "extractor/edge_based_node_segment.hpp"
 #include "engine/geospatial_query.hpp"
 #include "util/coordinate.hpp"
 #include "util/coordinate_calculation.hpp"
@@ -39,13 +39,13 @@ using namespace osrm::test;
 constexpr uint32_t TEST_BRANCHING_FACTOR = 8;
 constexpr uint32_t TEST_LEAF_NODE_SIZE = 64;
 
-using TestData = extractor::EdgeBasedNode;
+using TestData = extractor::EdgeBasedNodeSegment;
 using TestStaticRTree = StaticRTree<TestData,
-                                    std::vector<Coordinate>,
-                                    false,
+                                    osrm::storage::Ownership::Container,
                                     TEST_BRANCHING_FACTOR,
                                     TEST_LEAF_NODE_SIZE>;
-using MiniStaticRTree = StaticRTree<TestData, std::vector<Coordinate>, false, 2, 128>;
+using MiniStaticRTree = StaticRTree<TestData, osrm::storage::Ownership::Container, 2, 128>;
+using TestDataFacade = MockDataFacade<osrm::engine::routing_algorithms::ch::Algorithm>;
 
 // Choosen by a fair W20 dice roll (this value is completely arbitrary)
 constexpr unsigned RANDOM_SEED = 42;
@@ -137,7 +137,6 @@ template <unsigned NUM_NODES, unsigned NUM_EDGES> struct RandomGraphFixture
             if (used_edges.find(std::pair<unsigned, unsigned>(
                     std::min(data.u, data.v), std::max(data.u, data.v))) == used_edges.end())
             {
-                data.component.id = 0;
                 edges.emplace_back(data);
                 used_edges.emplace(std::min(data.u, data.v), std::max(data.u, data.v));
             }
@@ -171,7 +170,6 @@ struct GraphFixture
             d.forward_segment_id = {pair.second, true};
             d.reverse_segment_id = {pair.first, true};
             d.fwd_segment_position = 0;
-            d.packed_geometry_id = 0;
             edges.emplace_back(d);
         }
     }
@@ -273,7 +271,7 @@ void construction_test(const std::string &prefix, FixtureT *fixture)
 
 BOOST_FIXTURE_TEST_CASE(construct_tiny, TestRandomGraphFixture_10_30)
 {
-    using TinyTestTree = StaticRTree<TestData, std::vector<Coordinate>, false, 2, 64>;
+    using TinyTestTree = StaticRTree<TestData, osrm::storage::Ownership::Container, 2, 64>;
     construction_test<TinyTestTree>("test_tiny", this);
 }
 
@@ -358,14 +356,15 @@ BOOST_AUTO_TEST_CASE(radius_regression_test)
     std::string nodes_path;
     build_rtree<GraphFixture, MiniStaticRTree>("test_angle", &fixture, leaves_path, nodes_path);
     MiniStaticRTree rtree(nodes_path, leaves_path, fixture.coords);
-    MockDataFacade mockfacade;
-    engine::GeospatialQuery<MiniStaticRTree, MockDataFacade> query(
+    TestDataFacade mockfacade;
+    engine::GeospatialQuery<MiniStaticRTree, TestDataFacade> query(
         rtree, fixture.coords, mockfacade);
 
     Coordinate input(FloatLongitude{5.2}, FloatLatitude{5.0});
 
     {
-        auto results = query.NearestPhantomNodesInRange(input, 0.01);
+        auto results =
+            query.NearestPhantomNodesInRange(input, 0.01, osrm::engine::Approach::UNRESTRICTED);
         BOOST_CHECK_EQUAL(results.size(), 0);
     }
 }
@@ -385,26 +384,28 @@ BOOST_AUTO_TEST_CASE(bearing_tests)
     std::string nodes_path;
     build_rtree<GraphFixture, MiniStaticRTree>("test_bearing", &fixture, leaves_path, nodes_path);
     MiniStaticRTree rtree(nodes_path, leaves_path, fixture.coords);
-    MockDataFacade mockfacade;
-    engine::GeospatialQuery<MiniStaticRTree, MockDataFacade> query(
+    TestDataFacade mockfacade;
+    engine::GeospatialQuery<MiniStaticRTree, TestDataFacade> query(
         rtree, fixture.coords, mockfacade);
 
     Coordinate input(FloatLongitude{5.1}, FloatLatitude{5.0});
 
     {
-        auto results = query.NearestPhantomNodes(input, 5);
+        auto results = query.NearestPhantomNodes(input, 5, osrm::engine::Approach::UNRESTRICTED);
         BOOST_CHECK_EQUAL(results.size(), 2);
         BOOST_CHECK_EQUAL(results.back().phantom_node.forward_segment_id.id, 0);
         BOOST_CHECK_EQUAL(results.back().phantom_node.reverse_segment_id.id, 1);
     }
 
     {
-        auto results = query.NearestPhantomNodes(input, 5, 270, 10);
+        auto results =
+            query.NearestPhantomNodes(input, 5, 270, 10, osrm::engine::Approach::UNRESTRICTED);
         BOOST_CHECK_EQUAL(results.size(), 0);
     }
 
     {
-        auto results = query.NearestPhantomNodes(input, 5, 45, 10);
+        auto results =
+            query.NearestPhantomNodes(input, 5, 45, 10, osrm::engine::Approach::UNRESTRICTED);
         BOOST_CHECK_EQUAL(results.size(), 2);
 
         BOOST_CHECK(results[0].phantom_node.forward_segment_id.enabled);
@@ -417,17 +418,20 @@ BOOST_AUTO_TEST_CASE(bearing_tests)
     }
 
     {
-        auto results = query.NearestPhantomNodesInRange(input, 11000);
+        auto results =
+            query.NearestPhantomNodesInRange(input, 11000, osrm::engine::Approach::UNRESTRICTED);
         BOOST_CHECK_EQUAL(results.size(), 2);
     }
 
     {
-        auto results = query.NearestPhantomNodesInRange(input, 11000, 270, 10);
+        auto results = query.NearestPhantomNodesInRange(
+            input, 11000, 270, 10, osrm::engine::Approach::UNRESTRICTED);
         BOOST_CHECK_EQUAL(results.size(), 0);
     }
 
     {
-        auto results = query.NearestPhantomNodesInRange(input, 11000, 45, 10);
+        auto results = query.NearestPhantomNodesInRange(
+            input, 11000, 45, 10, osrm::engine::Approach::UNRESTRICTED);
         BOOST_CHECK_EQUAL(results.size(), 2);
 
         BOOST_CHECK(results[0].phantom_node.forward_segment_id.enabled);
@@ -459,8 +463,8 @@ BOOST_AUTO_TEST_CASE(bbox_search_tests)
     std::string nodes_path;
     build_rtree<GraphFixture, MiniStaticRTree>("test_bbox", &fixture, leaves_path, nodes_path);
     MiniStaticRTree rtree(nodes_path, leaves_path, fixture.coords);
-    MockDataFacade mockfacade;
-    engine::GeospatialQuery<MiniStaticRTree, MockDataFacade> query(
+    TestDataFacade mockfacade;
+    engine::GeospatialQuery<MiniStaticRTree, TestDataFacade> query(
         rtree, fixture.coords, mockfacade);
 
     {

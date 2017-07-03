@@ -4,9 +4,9 @@
 #include "engine/datafacade/contiguous_internalmem_datafacade.hpp"
 #include "engine/datafacade/shared_memory_allocator.hpp"
 
-#include "storage/shared_barrier.hpp"
 #include "storage/shared_datatype.hpp"
 #include "storage/shared_memory.hpp"
+#include "storage/shared_monitor.hpp"
 
 #include <boost/interprocess/sync/named_upgradable_mutex.hpp>
 #include <boost/thread/lock_types.hpp>
@@ -24,19 +24,21 @@ namespace engine
 // This class monitors the shared memory region that contains the pointers to
 // the data and layout regions that should be used. This region is updated
 // once a new dataset arrives.
-class DataWatchdog
+template <typename AlgorithmT> class DataWatchdog final
 {
+    using mutex_type = typename storage::SharedMonitor<storage::SharedDataTimestamp>::mutex_type;
+    using FacadeT = datafacade::ContiguousInternalMemoryDataFacade<AlgorithmT>;
+
   public:
-    DataWatchdog() : barrier(boost::interprocess::open_only), active(true), timestamp(0)
+    DataWatchdog() : active(true), timestamp(0)
     {
         // create the initial facade before launching the watchdog thread
         {
-            boost::interprocess::scoped_lock<storage::SharedBarrier::mutex_type>
-                current_region_lock(barrier.GetMutex());
+            boost::interprocess::scoped_lock<mutex_type> current_region_lock(barrier.get_mutex());
 
-            facade = std::make_shared<datafacade::ContiguousInternalMemoryDataFacade>(
-                std::make_unique<datafacade::SharedMemoryAllocator>(barrier.GetRegion()));
-            timestamp = barrier.GetTimestamp();
+            facade = std::make_shared<const FacadeT>(
+                std::make_unique<datafacade::SharedMemoryAllocator>(barrier.data().region));
+            timestamp = barrier.data().timestamp;
         }
 
         watcher = std::thread(&DataWatchdog::Run, this);
@@ -45,32 +47,31 @@ class DataWatchdog
     ~DataWatchdog()
     {
         active = false;
-        barrier.NotifyAll();
+        barrier.notify_all();
         watcher.join();
     }
 
-    auto GetDataFacade() const { return facade; }
+    std::shared_ptr<const FacadeT> Get() const { return facade; }
 
   private:
     void Run()
     {
         while (active)
         {
-            boost::interprocess::scoped_lock<storage::SharedBarrier::mutex_type>
-                current_region_lock(barrier.GetMutex());
+            boost::interprocess::scoped_lock<mutex_type> current_region_lock(barrier.get_mutex());
 
-            while (active && timestamp == barrier.GetTimestamp())
+            while (active && timestamp == barrier.data().timestamp)
             {
-                barrier.Wait(current_region_lock);
+                barrier.wait(current_region_lock);
             }
 
-            if (timestamp != barrier.GetTimestamp())
+            if (timestamp != barrier.data().timestamp)
             {
-                facade = std::make_shared<datafacade::ContiguousInternalMemoryDataFacade>(
-                    std::make_unique<datafacade::SharedMemoryAllocator>(barrier.GetRegion()));
-                timestamp = barrier.GetTimestamp();
-                util::Log() << "updated facade to region "
-                            << storage::regionToString(barrier.GetRegion()) << " with timestamp "
+                auto region = barrier.data().region;
+                facade = std::make_shared<const FacadeT>(
+                    std::make_unique<datafacade::SharedMemoryAllocator>(region));
+                timestamp = barrier.data().timestamp;
+                util::Log() << "updated facade to region " << region << " with timestamp "
                             << timestamp;
             }
         }
@@ -78,11 +79,11 @@ class DataWatchdog
         util::Log() << "DataWatchdog thread stopped";
     }
 
-    storage::SharedBarrier barrier;
+    storage::SharedMonitor<storage::SharedDataTimestamp> barrier;
     std::thread watcher;
     bool active;
     unsigned timestamp;
-    std::shared_ptr<datafacade::ContiguousInternalMemoryDataFacade> facade;
+    std::shared_ptr<const FacadeT> facade;
 };
 }
 }

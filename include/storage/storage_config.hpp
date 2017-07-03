@@ -55,7 +55,8 @@ struct StorageConfig final
     boost::filesystem::path ram_index_path;
     boost::filesystem::path file_index_path;
     boost::filesystem::path hsgr_data_path;
-    boost::filesystem::path nodes_data_path;
+    boost::filesystem::path node_based_nodes_data_path;
+    boost::filesystem::path edge_based_nodes_data_path;
     boost::filesystem::path edges_data_path;
     boost::filesystem::path core_data_path;
     boost::filesystem::path geometries_path;
@@ -69,6 +70,9 @@ struct StorageConfig final
     boost::filesystem::path intersection_class_path;
     boost::filesystem::path turn_lane_data_path;
     boost::filesystem::path turn_lane_description_path;
+    boost::filesystem::path mld_partition_path;
+    boost::filesystem::path mld_storage_path;
+    boost::filesystem::path mld_graph_path;
 };
 }
 }

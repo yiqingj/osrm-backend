@@ -1,11 +1,13 @@
-#ifndef ROUTING_BASE_HPP
-#define ROUTING_BASE_HPP
+#ifndef OSRM_ENGINE_ROUTING_BASE_HPP
+#define OSRM_ENGINE_ROUTING_BASE_HPP
 
 #include "extractor/guidance/turn_instruction.hpp"
-#include "engine/datafacade/datafacade_base.hpp"
-#include "engine/edge_unpacker.hpp"
+
+#include "engine/algorithm.hpp"
+#include "engine/datafacade/contiguous_internalmem_datafacade.hpp"
 #include "engine/internal_route_result.hpp"
 #include "engine/search_engine_data.hpp"
+
 #include "util/coordinate_calculation.hpp"
 #include "util/guidance/turn_bearing.hpp"
 #include "util/typedefs.hpp"
@@ -31,406 +33,341 @@ namespace engine
 
 namespace routing_algorithms
 {
+static constexpr bool FORWARD_DIRECTION = true;
+static constexpr bool REVERSE_DIRECTION = false;
+static constexpr bool DO_NOT_FORCE_LOOPS = false;
 
-class BasicRoutingInterface
+bool needsLoopForward(const PhantomNode &source_phantom, const PhantomNode &target_phantom);
+
+bool needsLoopBackwards(const PhantomNode &source_phantom, const PhantomNode &target_phantom);
+
+template <typename Heap>
+void insertNodesInHeaps(Heap &forward_heap, Heap &reverse_heap, const PhantomNodes &nodes)
 {
-  protected:
-    using EdgeData = datafacade::BaseDataFacade::EdgeData;
-
-  public:
-    /*
-    min_edge_offset is needed in case we use multiple
-    nodes as start/target nodes with different (even negative) offsets.
-    In that case the termination criterion is not correct
-    anymore.
-
-    Example:
-    forward heap: a(-100), b(0),
-    reverse heap: c(0), d(100)
-
-    a --- d
-      \ /
-      / \
-    b --- c
-
-    This is equivalent to running a bi-directional Dijkstra on the following graph:
-
-        a --- d
-       /  \ /  \
-      y    x    z
-       \  / \  /
-        b --- c
-
-    The graph is constructed by inserting nodes y and z that are connected to the initial nodes
-    using edges (y, a) with weight -100, (y, b) with weight 0 and,
-    (d, z) with weight 100, (c, z) with weight 0 corresponding.
-    Since we are dealing with a graph that contains _negative_ edges,
-    we need to add an offset to the termination criterion.
-    */
-    void RoutingStep(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
-                     SearchEngineData::QueryHeap &forward_heap,
-                     SearchEngineData::QueryHeap &reverse_heap,
-                     NodeID &middle_node_id,
-                     std::int32_t &upper_bound,
-                     std::int32_t min_edge_offset,
-                     const bool forward_direction,
-                     const bool stalling,
-                     const bool force_loop_forward,
-                     const bool force_loop_reverse) const;
-
-    template <bool UseDuration>
-    EdgeWeight GetLoopWeight(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
-                             NodeID node) const
+    const auto &source = nodes.source_phantom;
+    if (source.IsValidForwardSource())
     {
-        EdgeWeight loop_weight = UseDuration ? MAXIMAL_EDGE_DURATION : INVALID_EDGE_WEIGHT;
-        for (auto edge : facade->GetAdjacentEdgeRange(node))
-        {
-            const auto &data = facade->GetEdgeData(edge);
-            if (data.forward)
-            {
-                const NodeID to = facade->GetTarget(edge);
-                if (to == node)
-                {
-                    const auto value = UseDuration ? data.duration : data.weight;
-                    loop_weight = std::min(loop_weight, value);
-                }
-            }
-        }
-        return loop_weight;
+        forward_heap.Insert(source.forward_segment_id.id,
+                            -source.GetForwardWeightPlusOffset(),
+                            source.forward_segment_id.id);
     }
 
-    template <typename RandomIter>
-    void UnpackPath(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
-                    RandomIter packed_path_begin,
-                    RandomIter packed_path_end,
-                    const PhantomNodes &phantom_node_pair,
-                    std::vector<PathData> &unpacked_path) const
+    if (source.IsValidReverseSource())
     {
-        BOOST_ASSERT(std::distance(packed_path_begin, packed_path_end) > 0);
+        forward_heap.Insert(source.reverse_segment_id.id,
+                            -source.GetReverseWeightPlusOffset(),
+                            source.reverse_segment_id.id);
+    }
 
-        const bool start_traversed_in_reverse =
-            (*packed_path_begin != phantom_node_pair.source_phantom.forward_segment_id.id);
-        const bool target_traversed_in_reverse =
-            (*std::prev(packed_path_end) != phantom_node_pair.target_phantom.forward_segment_id.id);
+    const auto &target = nodes.target_phantom;
+    if (target.IsValidForwardTarget())
+    {
+        reverse_heap.Insert(target.forward_segment_id.id,
+                            target.GetForwardWeightPlusOffset(),
+                            target.forward_segment_id.id);
+    }
 
-        BOOST_ASSERT(*packed_path_begin == phantom_node_pair.source_phantom.forward_segment_id.id ||
-                     *packed_path_begin == phantom_node_pair.source_phantom.reverse_segment_id.id);
-        BOOST_ASSERT(
-            *std::prev(packed_path_end) == phantom_node_pair.target_phantom.forward_segment_id.id ||
-            *std::prev(packed_path_end) == phantom_node_pair.target_phantom.reverse_segment_id.id);
+    if (target.IsValidReverseTarget())
+    {
+        reverse_heap.Insert(target.reverse_segment_id.id,
+                            target.GetReverseWeightPlusOffset(),
+                            target.reverse_segment_id.id);
+    }
+}
 
-        UnpackCHPath(
-            *facade,
-            packed_path_begin,
-            packed_path_end,
-            [this,
-             &facade,
-             &unpacked_path,
-             &phantom_node_pair,
-             &start_traversed_in_reverse,
-             &target_traversed_in_reverse](std::pair<NodeID, NodeID> & /* edge */,
-                                           const EdgeData &edge_data) {
+template <typename ManyToManyQueryHeap>
+void insertSourceInHeap(ManyToManyQueryHeap &heap, const PhantomNode &phantom_node)
+{
+    if (phantom_node.IsValidForwardSource())
+    {
+        heap.Insert(phantom_node.forward_segment_id.id,
+                    -phantom_node.GetForwardWeightPlusOffset(),
+                    {phantom_node.forward_segment_id.id, -phantom_node.GetForwardDuration()});
+    }
+    if (phantom_node.IsValidReverseSource())
+    {
+        heap.Insert(phantom_node.reverse_segment_id.id,
+                    -phantom_node.GetReverseWeightPlusOffset(),
+                    {phantom_node.reverse_segment_id.id, -phantom_node.GetReverseDuration()});
+    }
+}
 
-                BOOST_ASSERT_MSG(!edge_data.shortcut, "original edge flagged as shortcut");
-                const auto name_index = facade->GetNameIndexFromEdgeID(edge_data.id);
-                const auto turn_instruction = facade->GetTurnInstructionForEdgeID(edge_data.id);
-                const extractor::TravelMode travel_mode =
-                    (unpacked_path.empty() && start_traversed_in_reverse)
-                        ? phantom_node_pair.source_phantom.backward_travel_mode
-                        : facade->GetTravelModeForEdgeID(edge_data.id);
+template <typename ManyToManyQueryHeap>
+void insertTargetInHeap(ManyToManyQueryHeap &heap, const PhantomNode &phantom_node)
+{
+    if (phantom_node.IsValidForwardTarget())
+    {
+        heap.Insert(phantom_node.forward_segment_id.id,
+                    phantom_node.GetForwardWeightPlusOffset(),
+                    {phantom_node.forward_segment_id.id, phantom_node.GetForwardDuration()});
+    }
+    if (phantom_node.IsValidReverseTarget())
+    {
+        heap.Insert(phantom_node.reverse_segment_id.id,
+                    phantom_node.GetReverseWeightPlusOffset(),
+                    {phantom_node.reverse_segment_id.id, phantom_node.GetReverseDuration()});
+    }
+}
 
-                const auto geometry_index = facade->GetGeometryIndexForEdgeID(edge_data.id);
-                std::vector<NodeID> id_vector;
+template <typename FacadeT>
+void annotatePath(const FacadeT &facade,
+                  const PhantomNodes &phantom_node_pair,
+                  const std::vector<NodeID> &unpacked_nodes,
+                  const std::vector<EdgeID> &unpacked_edges,
+                  std::vector<PathData> &unpacked_path)
+{
+    BOOST_ASSERT(!unpacked_nodes.empty());
+    BOOST_ASSERT(unpacked_nodes.size() == unpacked_edges.size() + 1);
 
-                std::vector<EdgeWeight> weight_vector;
-                std::vector<EdgeWeight> duration_vector;
-                std::vector<DatasourceID> datasource_vector;
-                if (geometry_index.forward)
-                {
-                    id_vector = facade->GetUncompressedForwardGeometry(geometry_index.id);
-                    weight_vector = facade->GetUncompressedForwardWeights(geometry_index.id);
-                    duration_vector = facade->GetUncompressedForwardDurations(geometry_index.id);
-                    datasource_vector =
-                        facade->GetUncompressedForwardDatasources(geometry_index.id);
-                }
-                else
-                {
-                    id_vector = facade->GetUncompressedReverseGeometry(geometry_index.id);
-                    weight_vector = facade->GetUncompressedReverseWeights(geometry_index.id);
-                    duration_vector = facade->GetUncompressedReverseDurations(geometry_index.id);
-                    datasource_vector =
-                        facade->GetUncompressedReverseDatasources(geometry_index.id);
-                }
-                BOOST_ASSERT(id_vector.size() > 0);
-                BOOST_ASSERT(datasource_vector.size() > 0);
-                BOOST_ASSERT(weight_vector.size() == id_vector.size() - 1);
-                BOOST_ASSERT(duration_vector.size() == id_vector.size() - 1);
-                const bool is_first_segment = unpacked_path.empty();
+    const auto source_node_id = unpacked_nodes.front();
+    const auto target_node_id = unpacked_nodes.back();
+    const bool start_traversed_in_reverse =
+        phantom_node_pair.source_phantom.forward_segment_id.id != source_node_id;
+    const bool target_traversed_in_reverse =
+        phantom_node_pair.target_phantom.forward_segment_id.id != target_node_id;
 
-                const std::size_t start_index =
-                    (is_first_segment
-                         ? ((start_traversed_in_reverse)
-                                ? weight_vector.size() -
-                                      phantom_node_pair.source_phantom.fwd_segment_position - 1
-                                : phantom_node_pair.source_phantom.fwd_segment_position)
-                         : 0);
-                const std::size_t end_index = weight_vector.size();
+    BOOST_ASSERT(phantom_node_pair.source_phantom.forward_segment_id.id == source_node_id ||
+                 phantom_node_pair.source_phantom.reverse_segment_id.id == source_node_id);
+    BOOST_ASSERT(phantom_node_pair.target_phantom.forward_segment_id.id == target_node_id ||
+                 phantom_node_pair.target_phantom.reverse_segment_id.id == target_node_id);
 
-                BOOST_ASSERT(start_index >= 0);
-                BOOST_ASSERT(start_index < end_index);
-                for (std::size_t segment_idx = start_index; segment_idx < end_index; ++segment_idx)
-                {
-                    unpacked_path.push_back(
-                        PathData{id_vector[segment_idx + 1],
-                                 name_index,
-                                 weight_vector[segment_idx],
-                                 duration_vector[segment_idx],
-                                 extractor::guidance::TurnInstruction::NO_TURN(),
-                                 {{0, INVALID_LANEID}, INVALID_LANE_DESCRIPTIONID},
-                                 travel_mode,
-                                 INVALID_ENTRY_CLASSID,
-                                 datasource_vector[segment_idx],
-                                 util::guidance::TurnBearing(0),
-                                 util::guidance::TurnBearing(0)});
-                }
-                BOOST_ASSERT(unpacked_path.size() > 0);
-                if (facade->hasLaneData(edge_data.id))
-                    unpacked_path.back().lane_data = facade->GetLaneData(edge_data.id);
+    auto node_from = unpacked_nodes.begin(), node_last = std::prev(unpacked_nodes.end());
+    for (auto edge = unpacked_edges.begin(); node_from != node_last; ++node_from, ++edge)
+    {
+        const auto &edge_data = facade.GetEdgeData(*edge);
+        const auto turn_id = edge_data.turn_id; // edge-based graph edge index
+        const auto node_id = *node_from;        // edge-based graph node index
+        const auto name_index = facade.GetNameIndex(node_id);
+        const auto turn_instruction = facade.GetTurnInstructionForEdgeID(turn_id);
+        const extractor::TravelMode travel_mode = facade.GetTravelMode(node_id);
 
-                unpacked_path.back().entry_classid = facade->GetEntryClassID(edge_data.id);
-                unpacked_path.back().turn_instruction = turn_instruction;
-                unpacked_path.back().duration_until_turn +=
-                    facade->GetDurationPenaltyForEdgeID(edge_data.id);
-                unpacked_path.back().weight_until_turn +=
-                    facade->GetWeightPenaltyForEdgeID(edge_data.id);
-                unpacked_path.back().pre_turn_bearing = facade->PreTurnBearing(edge_data.id);
-                unpacked_path.back().post_turn_bearing = facade->PostTurnBearing(edge_data.id);
-            });
+        const auto geometry_index = facade.GetGeometryIndex(node_id);
+        std::vector<NodeID> id_vector;
 
-        std::size_t start_index = 0, end_index = 0;
-        std::vector<unsigned> id_vector;
         std::vector<EdgeWeight> weight_vector;
         std::vector<EdgeWeight> duration_vector;
         std::vector<DatasourceID> datasource_vector;
-        const bool is_local_path = (phantom_node_pair.source_phantom.packed_geometry_id ==
-                                    phantom_node_pair.target_phantom.packed_geometry_id) &&
-                                   unpacked_path.empty();
-
-        if (target_traversed_in_reverse)
+        if (geometry_index.forward)
         {
-            id_vector = facade->GetUncompressedReverseGeometry(
-                phantom_node_pair.target_phantom.packed_geometry_id);
-
-            weight_vector = facade->GetUncompressedReverseWeights(
-                phantom_node_pair.target_phantom.packed_geometry_id);
-
-            duration_vector = facade->GetUncompressedReverseDurations(
-                phantom_node_pair.target_phantom.packed_geometry_id);
-
-            datasource_vector = facade->GetUncompressedReverseDatasources(
-                phantom_node_pair.target_phantom.packed_geometry_id);
-
-            if (is_local_path)
-            {
-                start_index = weight_vector.size() -
-                              phantom_node_pair.source_phantom.fwd_segment_position - 1;
-            }
-            end_index =
-                weight_vector.size() - phantom_node_pair.target_phantom.fwd_segment_position - 1;
+            id_vector = facade.GetUncompressedForwardGeometry(geometry_index.id);
+            weight_vector = facade.GetUncompressedForwardWeights(geometry_index.id);
+            duration_vector = facade.GetUncompressedForwardDurations(geometry_index.id);
+            datasource_vector = facade.GetUncompressedForwardDatasources(geometry_index.id);
         }
         else
         {
-            if (is_local_path)
-            {
-                start_index = phantom_node_pair.source_phantom.fwd_segment_position;
-            }
-            end_index = phantom_node_pair.target_phantom.fwd_segment_position;
-
-            id_vector = facade->GetUncompressedForwardGeometry(
-                phantom_node_pair.target_phantom.packed_geometry_id);
-
-            weight_vector = facade->GetUncompressedForwardWeights(
-                phantom_node_pair.target_phantom.packed_geometry_id);
-
-            duration_vector = facade->GetUncompressedForwardDurations(
-                phantom_node_pair.target_phantom.packed_geometry_id);
-
-            datasource_vector = facade->GetUncompressedForwardDatasources(
-                phantom_node_pair.target_phantom.packed_geometry_id);
+            id_vector = facade.GetUncompressedReverseGeometry(geometry_index.id);
+            weight_vector = facade.GetUncompressedReverseWeights(geometry_index.id);
+            duration_vector = facade.GetUncompressedReverseDurations(geometry_index.id);
+            datasource_vector = facade.GetUncompressedReverseDatasources(geometry_index.id);
         }
+        BOOST_ASSERT(id_vector.size() > 0);
+        BOOST_ASSERT(datasource_vector.size() > 0);
+        BOOST_ASSERT(weight_vector.size() == id_vector.size() - 1);
+        BOOST_ASSERT(duration_vector.size() == id_vector.size() - 1);
+        const bool is_first_segment = unpacked_path.empty();
 
-        // Given the following compressed geometry:
-        // U---v---w---x---y---Z
-        //    s           t
-        // s: fwd_segment 0
-        // t: fwd_segment 3
-        // -> (U, v), (v, w), (w, x)
-        // note that (x, t) is _not_ included but needs to be added later.
-        for (std::size_t segment_idx = start_index; segment_idx != end_index;
-             (start_index < end_index ? ++segment_idx : --segment_idx))
+        const std::size_t start_index =
+            (is_first_segment ? ((start_traversed_in_reverse)
+                                     ? weight_vector.size() -
+                                           phantom_node_pair.source_phantom.fwd_segment_position - 1
+                                     : phantom_node_pair.source_phantom.fwd_segment_position)
+                              : 0);
+        const std::size_t end_index = weight_vector.size();
+
+        BOOST_ASSERT(start_index >= 0);
+        BOOST_ASSERT(start_index < end_index);
+        for (std::size_t segment_idx = start_index; segment_idx < end_index; ++segment_idx)
         {
-            BOOST_ASSERT(segment_idx < id_vector.size() - 1);
-            BOOST_ASSERT(phantom_node_pair.target_phantom.forward_travel_mode > 0);
-            unpacked_path.push_back(PathData{
-                id_vector[start_index < end_index ? segment_idx + 1 : segment_idx - 1],
-                phantom_node_pair.target_phantom.name_id,
-                weight_vector[segment_idx],
-                duration_vector[segment_idx],
-                extractor::guidance::TurnInstruction::NO_TURN(),
-                {{0, INVALID_LANEID}, INVALID_LANE_DESCRIPTIONID},
-                target_traversed_in_reverse ? phantom_node_pair.target_phantom.backward_travel_mode
-                                            : phantom_node_pair.target_phantom.forward_travel_mode,
-                INVALID_ENTRY_CLASSID,
-                datasource_vector[segment_idx],
-                util::guidance::TurnBearing(0),
-                util::guidance::TurnBearing(0)});
+            unpacked_path.push_back(PathData{id_vector[segment_idx + 1],
+                                             name_index,
+                                             weight_vector[segment_idx],
+                                             duration_vector[segment_idx],
+                                             extractor::guidance::TurnInstruction::NO_TURN(),
+                                             {{0, INVALID_LANEID}, INVALID_LANE_DESCRIPTIONID},
+                                             travel_mode,
+                                             EMPTY_ENTRY_CLASS,
+                                             datasource_vector[segment_idx],
+                                             util::guidance::TurnBearing(0),
+                                             util::guidance::TurnBearing(0)});
         }
+        BOOST_ASSERT(unpacked_path.size() > 0);
+        if (facade.HasLaneData(turn_id))
+            unpacked_path.back().lane_data = facade.GetLaneData(turn_id);
 
-        if (unpacked_path.size() > 0)
-        {
-            const auto source_weight = start_traversed_in_reverse
-                                           ? phantom_node_pair.source_phantom.reverse_weight
-                                           : phantom_node_pair.source_phantom.forward_weight;
-            const auto source_duration = start_traversed_in_reverse
-                                             ? phantom_node_pair.source_phantom.reverse_duration
-                                             : phantom_node_pair.source_phantom.forward_duration;
-            // The above code will create segments for (v, w), (w,x), (x, y) and (y, Z).
-            // However the first segment duration needs to be adjusted to the fact that the source
-            // phantom is in the middle of the segment. We do this by subtracting v--s from the
-            // duration.
-
-            // Since it's possible duration_until_turn can be less than source_weight here if
-            // a negative enough turn penalty is used to modify this edge weight during
-            // osrm-contract, we clamp to 0 here so as not to return a negative duration
-            // for this segment.
-
-            // TODO this creates a scenario where it's possible the duration from a phantom
-            // node to the first turn would be the same as from end to end of a segment,
-            // which is obviously incorrect and not ideal...
-            unpacked_path.front().weight_until_turn =
-                std::max(unpacked_path.front().weight_until_turn - source_weight, 0);
-            unpacked_path.front().duration_until_turn =
-                std::max(unpacked_path.front().duration_until_turn - source_duration, 0);
-        }
-
-        // there is no equivalent to a node-based node in an edge-expanded graph.
-        // two equivalent routes may start (or end) at different node-based edges
-        // as they are added with the offset how much "weight" on the edge
-        // has already been traversed. Depending on offset one needs to remove
-        // the last node.
-        if (unpacked_path.size() > 1)
-        {
-            const std::size_t last_index = unpacked_path.size() - 1;
-            const std::size_t second_to_last_index = last_index - 1;
-
-            if (unpacked_path[last_index].turn_via_node ==
-                unpacked_path[second_to_last_index].turn_via_node)
-            {
-                unpacked_path.pop_back();
-            }
-            BOOST_ASSERT(!unpacked_path.empty());
-        }
+        unpacked_path.back().entry_class = facade.GetEntryClass(turn_id);
+        unpacked_path.back().turn_instruction = turn_instruction;
+        unpacked_path.back().duration_until_turn += facade.GetDurationPenaltyForEdgeID(turn_id);
+        unpacked_path.back().weight_until_turn += facade.GetWeightPenaltyForEdgeID(turn_id);
+        unpacked_path.back().pre_turn_bearing = facade.PreTurnBearing(turn_id);
+        unpacked_path.back().post_turn_bearing = facade.PostTurnBearing(turn_id);
     }
 
-    /**
-     * Unpacks a single edge (NodeID->NodeID) from the CH graph down to it's original non-shortcut
-     * route.
-     * @param from the node the CH edge starts at
-     * @param to the node the CH edge finishes at
-     * @param unpacked_path the sequence of original NodeIDs that make up the expanded CH edge
-     */
-    void UnpackEdge(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
-                    const NodeID from,
-                    const NodeID to,
-                    std::vector<NodeID> &unpacked_path) const;
+    std::size_t start_index = 0, end_index = 0;
+    std::vector<unsigned> id_vector;
+    std::vector<EdgeWeight> weight_vector;
+    std::vector<EdgeWeight> duration_vector;
+    std::vector<DatasourceID> datasource_vector;
+    const auto source_geometry_id = facade.GetGeometryIndex(source_node_id).id;
+    const auto target_geometry_id = facade.GetGeometryIndex(target_node_id).id;
+    const auto is_local_path = source_geometry_id == target_geometry_id && unpacked_path.empty();
 
-    void RetrievePackedPathFromHeap(const SearchEngineData::QueryHeap &forward_heap,
-                                    const SearchEngineData::QueryHeap &reverse_heap,
-                                    const NodeID middle_node_id,
-                                    std::vector<NodeID> &packed_path) const;
+    if (target_traversed_in_reverse)
+    {
+        id_vector = facade.GetUncompressedReverseGeometry(target_geometry_id);
+        weight_vector = facade.GetUncompressedReverseWeights(target_geometry_id);
+        duration_vector = facade.GetUncompressedReverseDurations(target_geometry_id);
+        datasource_vector = facade.GetUncompressedReverseDatasources(target_geometry_id);
 
-    void RetrievePackedPathFromSingleHeap(const SearchEngineData::QueryHeap &search_heap,
-                                          const NodeID middle_node_id,
-                                          std::vector<NodeID> &packed_path) const;
+        if (is_local_path)
+        {
+            start_index =
+                weight_vector.size() - phantom_node_pair.source_phantom.fwd_segment_position - 1;
+        }
+        end_index =
+            weight_vector.size() - phantom_node_pair.target_phantom.fwd_segment_position - 1;
+    }
+    else
+    {
+        if (is_local_path)
+        {
+            start_index = phantom_node_pair.source_phantom.fwd_segment_position;
+        }
+        end_index = phantom_node_pair.target_phantom.fwd_segment_position;
 
-    // assumes that heaps are already setup correctly.
-    // ATTENTION: This only works if no additional offset is supplied next to the Phantom Node
-    // Offsets.
-    // In case additional offsets are supplied, you might have to force a loop first.
-    // A forced loop might be necessary, if source and target are on the same segment.
-    // If this is the case and the offsets of the respective direction are larger for the source
-    // than the target
-    // then a force loop is required (e.g. source_phantom.forward_segment_id ==
-    // target_phantom.forward_segment_id
-    // && source_phantom.GetForwardWeightPlusOffset() > target_phantom.GetForwardWeightPlusOffset())
-    // requires
-    // a force loop, if the heaps have been initialized with positive offsets.
-    void Search(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
-                SearchEngineData::QueryHeap &forward_heap,
-                SearchEngineData::QueryHeap &reverse_heap,
-                std::int32_t &weight,
-                std::vector<NodeID> &packed_leg,
-                const bool force_loop_forward,
-                const bool force_loop_reverse,
-                const int duration_upper_bound = INVALID_EDGE_WEIGHT) const;
+        id_vector = facade.GetUncompressedForwardGeometry(target_geometry_id);
+        weight_vector = facade.GetUncompressedForwardWeights(target_geometry_id);
+        duration_vector = facade.GetUncompressedForwardDurations(target_geometry_id);
+        datasource_vector = facade.GetUncompressedForwardDatasources(target_geometry_id);
+    }
 
-    // assumes that heaps are already setup correctly.
-    // A forced loop might be necessary, if source and target are on the same segment.
-    // If this is the case and the offsets of the respective direction are larger for the source
-    // than the target
-    // then a force loop is required (e.g. source_phantom.forward_segment_id ==
-    // target_phantom.forward_segment_id
-    // && source_phantom.GetForwardWeightPlusOffset() > target_phantom.GetForwardWeightPlusOffset())
-    // requires
-    // a force loop, if the heaps have been initialized with positive offsets.
-    void SearchWithCore(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
-                        SearchEngineData::QueryHeap &forward_heap,
-                        SearchEngineData::QueryHeap &reverse_heap,
-                        SearchEngineData::QueryHeap &forward_core_heap,
-                        SearchEngineData::QueryHeap &reverse_core_heap,
-                        int &weight,
-                        std::vector<NodeID> &packed_leg,
-                        const bool force_loop_forward,
-                        const bool force_loop_reverse,
-                        int duration_upper_bound = INVALID_EDGE_WEIGHT) const;
+    // Given the following compressed geometry:
+    // U---v---w---x---y---Z
+    //    s           t
+    // s: fwd_segment 0
+    // t: fwd_segment 3
+    // -> (U, v), (v, w), (w, x)
+    // note that (x, t) is _not_ included but needs to be added later.
+    for (std::size_t segment_idx = start_index; segment_idx != end_index;
+         (start_index < end_index ? ++segment_idx : --segment_idx))
+    {
+        BOOST_ASSERT(segment_idx < id_vector.size() - 1);
+        BOOST_ASSERT(facade.GetTravelMode(target_node_id) > 0);
+        unpacked_path.push_back(
+            PathData{id_vector[start_index < end_index ? segment_idx + 1 : segment_idx - 1],
+                     facade.GetNameIndex(target_node_id),
+                     weight_vector[segment_idx],
+                     duration_vector[segment_idx],
+                     extractor::guidance::TurnInstruction::NO_TURN(),
+                     {{0, INVALID_LANEID}, INVALID_LANE_DESCRIPTIONID},
+                     facade.GetTravelMode(target_node_id),
+                     EMPTY_ENTRY_CLASS,
+                     datasource_vector[segment_idx],
+                     util::guidance::TurnBearing(0),
+                     util::guidance::TurnBearing(0)});
+    }
 
-    bool NeedsLoopForward(const PhantomNode &source_phantom,
-                          const PhantomNode &target_phantom) const;
+    if (unpacked_path.size() > 0)
+    {
+        const auto source_weight = start_traversed_in_reverse
+                                       ? phantom_node_pair.source_phantom.reverse_weight
+                                       : phantom_node_pair.source_phantom.forward_weight;
+        const auto source_duration = start_traversed_in_reverse
+                                         ? phantom_node_pair.source_phantom.reverse_duration
+                                         : phantom_node_pair.source_phantom.forward_duration;
+        // The above code will create segments for (v, w), (w,x), (x, y) and (y, Z).
+        // However the first segment duration needs to be adjusted to the fact that the source
+        // phantom is in the middle of the segment. We do this by subtracting v--s from the
+        // duration.
 
-    bool NeedsLoopBackwards(const PhantomNode &source_phantom,
-                            const PhantomNode &target_phantom) const;
+        // Since it's possible duration_until_turn can be less than source_weight here if
+        // a negative enough turn penalty is used to modify this edge weight during
+        // osrm-contract, we clamp to 0 here so as not to return a negative duration
+        // for this segment.
 
-    double GetPathDistance(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
-                           const std::vector<NodeID> &packed_path,
-                           const PhantomNode &source_phantom,
-                           const PhantomNode &target_phantom) const;
+        // TODO this creates a scenario where it's possible the duration from a phantom
+        // node to the first turn would be the same as from end to end of a segment,
+        // which is obviously incorrect and not ideal...
+        unpacked_path.front().weight_until_turn =
+            std::max(unpacked_path.front().weight_until_turn - source_weight, 0);
+        unpacked_path.front().duration_until_turn =
+            std::max(unpacked_path.front().duration_until_turn - source_duration, 0);
+    }
 
-    // Requires the heaps for be empty
-    // If heaps should be adjusted to be initialized outside of this function,
-    // the addition of force_loop parameters might be required
-    double
-    GetNetworkDistanceWithCore(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
-                               SearchEngineData::QueryHeap &forward_heap,
-                               SearchEngineData::QueryHeap &reverse_heap,
-                               SearchEngineData::QueryHeap &forward_core_heap,
-                               SearchEngineData::QueryHeap &reverse_core_heap,
-                               const PhantomNode &source_phantom,
-                               const PhantomNode &target_phantom,
-                               int duration_upper_bound = INVALID_EDGE_WEIGHT) const;
+    // there is no equivalent to a node-based node in an edge-expanded graph.
+    // two equivalent routes may start (or end) at different node-based edges
+    // as they are added with the offset how much "weight" on the edge
+    // has already been traversed. Depending on offset one needs to remove
+    // the last node.
+    if (unpacked_path.size() > 1)
+    {
+        const std::size_t last_index = unpacked_path.size() - 1;
+        const std::size_t second_to_last_index = last_index - 1;
 
-    // Requires the heaps for be empty
-    // If heaps should be adjusted to be initialized outside of this function,
-    // the addition of force_loop parameters might be required
-    double GetNetworkDistance(const std::shared_ptr<const datafacade::BaseDataFacade> facade,
-                              SearchEngineData::QueryHeap &forward_heap,
-                              SearchEngineData::QueryHeap &reverse_heap,
-                              const PhantomNode &source_phantom,
-                              const PhantomNode &target_phantom,
-                              int duration_upper_bound = INVALID_EDGE_WEIGHT) const;
-};
+        if (unpacked_path[last_index].turn_via_node ==
+            unpacked_path[second_to_last_index].turn_via_node)
+        {
+            unpacked_path.pop_back();
+        }
+        BOOST_ASSERT(!unpacked_path.empty());
+    }
+}
+
+template <typename Algorithm>
+double getPathDistance(const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
+                       const std::vector<PathData> unpacked_path,
+                       const PhantomNode &source_phantom,
+                       const PhantomNode &target_phantom)
+{
+    using util::coordinate_calculation::detail::DEGREE_TO_RAD;
+    using util::coordinate_calculation::detail::EARTH_RADIUS;
+
+    double distance = 0;
+    double prev_lat =
+        static_cast<double>(util::toFloating(source_phantom.location.lat)) * DEGREE_TO_RAD;
+    double prev_lon =
+        static_cast<double>(util::toFloating(source_phantom.location.lon)) * DEGREE_TO_RAD;
+    double prev_cos = std::cos(prev_lat);
+    for (const auto &p : unpacked_path)
+    {
+        const auto current_coordinate = facade.GetCoordinateOfNode(p.turn_via_node);
+
+        const double current_lat =
+            static_cast<double>(util::toFloating(current_coordinate.lat)) * DEGREE_TO_RAD;
+        const double current_lon =
+            static_cast<double>(util::toFloating(current_coordinate.lon)) * DEGREE_TO_RAD;
+        const double current_cos = std::cos(current_lat);
+
+        const double sin_dlon = std::sin((prev_lon - current_lon) / 2.0);
+        const double sin_dlat = std::sin((prev_lat - current_lat) / 2.0);
+
+        const double aharv = sin_dlat * sin_dlat + prev_cos * current_cos * sin_dlon * sin_dlon;
+        const double charv = 2. * std::atan2(std::sqrt(aharv), std::sqrt(1.0 - aharv));
+        distance += EARTH_RADIUS * charv;
+
+        prev_lat = current_lat;
+        prev_lon = current_lon;
+        prev_cos = current_cos;
+    }
+
+    const double current_lat =
+        static_cast<double>(util::toFloating(target_phantom.location.lat)) * DEGREE_TO_RAD;
+    const double current_lon =
+        static_cast<double>(util::toFloating(target_phantom.location.lon)) * DEGREE_TO_RAD;
+    const double current_cos = std::cos(current_lat);
+
+    const double sin_dlon = std::sin((prev_lon - current_lon) / 2.0);
+    const double sin_dlat = std::sin((prev_lat - current_lat) / 2.0);
+
+    const double aharv = sin_dlat * sin_dlat + prev_cos * current_cos * sin_dlon * sin_dlon;
+    const double charv = 2. * std::atan2(std::sqrt(aharv), std::sqrt(1.0 - aharv));
+    distance += EARTH_RADIUS * charv;
+
+    return distance;
+}
 
 } // namespace routing_algorithms
 } // namespace engine
 } // namespace osrm
 
-#endif // ROUTING_BASE_HPP
+#endif // OSRM_ENGINE_ROUTING_BASE_HPP

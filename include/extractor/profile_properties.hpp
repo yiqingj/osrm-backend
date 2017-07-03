@@ -1,6 +1,8 @@
 #ifndef PROFILE_PROPERTIES_HPP
 #define PROFILE_PROPERTIES_HPP
 
+#include "util/typedefs.hpp"
+
 #include <algorithm>
 #include <boost/assert.hpp>
 #include <boost/numeric/conversion/cast.hpp>
@@ -20,7 +22,7 @@ struct ProfileProperties
         : traffic_signal_penalty(0), u_turn_penalty(0),
           max_speed_for_map_matching(DEFAULT_MAX_SPEED), continue_straight_at_waypoint(true),
           use_turn_restrictions(false), left_hand_driving(false), fallback_to_duration(true),
-          weight_name{"duration"}
+          weight_name{"duration"}, call_tagless_node_function(true)
     {
         BOOST_ASSERT(weight_name[MAX_WEIGHT_NAME_LENGTH] == '\0');
     }
@@ -66,6 +68,11 @@ struct ProfileProperties
 
     double GetWeightMultiplier() const { return std::pow(10., weight_precision); }
 
+    double GetMaxTurnWeight() const
+    {
+        return std::numeric_limits<TurnPenalty>::max() / GetWeightMultiplier();
+    }
+
     //! penalty to cross a traffic light in deci-seconds
     std::int32_t traffic_signal_penalty;
     //! penalty to do a uturn in deci-seconds
@@ -80,6 +87,9 @@ struct ProfileProperties
     //! stores the name of the weight (e.g. 'duration', 'distance', 'safety')
     char weight_name[MAX_WEIGHT_NAME_LENGTH + 1];
     unsigned weight_precision = 1;
+    bool force_split_edges = false;
+
+    bool call_tagless_node_function = true;
 };
 }
 }

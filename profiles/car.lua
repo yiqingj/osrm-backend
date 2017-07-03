@@ -8,10 +8,6 @@ local Sequence = require('lib/sequence')
 local Handlers = require("lib/handlers")
 local next = next       -- bind to local for speed
 
-penalty_table = {
-  ["service"] = 0.5,
-}
-
 -- set profile properties
 properties.max_speed_for_map_matching      = 180/3.6 -- 180kmph -> m/s
 properties.use_turn_restrictions           = true
@@ -24,6 +20,12 @@ properties.weight_name                     = 'routability'
 -- For shortest distance without penalties for accessibility
 --properties.weight_name                     = 'distance'
 
+-- Set to true if you need to call the node_function for every node.
+-- Generally can be left as false to avoid unnecessary Lua calls
+-- (which slow down pre-processing).
+properties.call_tagless_node_function      = false
+
+
 local profile = {
   default_mode      = mode.driving,
   default_speed     = 10,
@@ -34,9 +36,6 @@ local profile = {
   speed_reduction            = 0.8,
   traffic_light_penalty      = 2,
   u_turn_penalty             = 20,
-  restricted_penalty         = 3000,
-  -- Note^: abstract value but in seconds correlates approximately to 50 min
-  -- meaning that a route through a local access way is > 50 min faster than around
 
   -- Note: this biases right-side driving.
   -- Should be inverted for left-driving countries.
@@ -74,13 +73,18 @@ local profile = {
     'agricultural',
     'forestry',
     'emergency',
-    'psv'
+    'psv',
+    'customers',
+    'private',
+    'delivery',
+    'destination'
   },
 
   restricted_access_tag_list = Set {
     'private',
     'delivery',
-    'destination'
+    'destination',
+    'customers',
   },
 
   access_tags_hierarchy = Sequence {
@@ -135,6 +139,21 @@ local profile = {
     driveway          = 0.5,
     ["drive-through"] = 0.5,
     ["drive-thru"] = 0.5
+  },
+
+ restricted_highway_whitelist = Set {
+      'motorway',
+      'motorway_link',
+      'trunk',
+      'trunk_link',
+      'primary',
+      'primary_link',
+      'secondary',
+      'secondary_link',
+      'tertiary',
+      'tertiary_link',
+      'residential',
+      'living_street',
   },
 
   route_speeds = {
@@ -259,7 +278,7 @@ function node_function (node, result)
   -- parse access and barrier tags
   local access = find_access_tag(node, profile.access_tags_hierarchy)
   if access then
-    if profile.access_tag_blacklist[access] then
+    if profile.access_tag_blacklist[access] and not profile.restricted_access_tag_list[access] then
       result.barrier = true
     end
   else
@@ -303,10 +322,11 @@ function way_function(way, result)
   }
 
   -- perform an quick initial check and abort if the way is
-  -- obviously not routable. here we require at least one
-  -- of the prefetched tags to be present, ie. the data table
-  -- cannot be empty
-  if next(data) == nil then     -- is the data table empty?
+  -- obviously not routable.
+  -- highway or route tags must be in data table, bridge is optional
+  if (not data.highway or data.highway == '') and
+  (not data.route or data.route == '')
+  then
     return
   end
 
@@ -371,32 +391,33 @@ function turn_function (turn)
   local turn_penalty = profile.turn_penalty
   local turn_bias = profile.turn_bias
 
+  if turn.has_traffic_light then
+      turn.duration = profile.traffic_light_penalty
+  end
+
   if turn.turn_type ~= turn_type.no_turn then
     if turn.angle >= 0 then
-      turn.duration = turn_penalty / (1 + math.exp( -((13 / turn_bias) *  turn.angle/180 - 6.5*turn_bias)))
+      turn.duration = turn.duration + turn_penalty / (1 + math.exp( -((13 / turn_bias) *  turn.angle/180 - 6.5*turn_bias)))
     else
-      turn.duration = turn_penalty / (1 + math.exp( -((13 * turn_bias) * -turn.angle/180 - 6.5/turn_bias)))
+      turn.duration = turn.duration + turn_penalty / (1 + math.exp( -((13 * turn_bias) * -turn.angle/180 - 6.5/turn_bias)))
     end
 
     if turn.direction_modifier == direction_modifier.u_turn then
       turn.duration = turn.duration + profile.u_turn_penalty
     end
+  end
 
-    if turn.has_traffic_light then
-       turn.duration = turn.duration + profile.traffic_light_penalty
-    end
+  -- for distance based routing we don't want to have penalties based on turn angle
+  if properties.weight_name == 'distance' then
+     turn.weight = 0
+  else
+     turn.weight = turn.duration
+  end
 
-    -- for distance based routing we don't want to have penalties based on turn angle
-    if properties.weight_name == 'distance' then
-       turn.weight = 0
-    else
-       turn.weight = turn.duration
-    end
-    if properties.weight_name == 'routability' then
-        -- penalize turns from non-local access only segments onto local access only tags
-        if not turn.source_restricted and turn.target_restricted then
-            turn.weight = turn.weight + profile.restricted_penalty
-        end
-    end
+  if properties.weight_name == 'routability' then
+      -- penalize turns from non-local access only segments onto local access only tags
+      if not turn.source_restricted and turn.target_restricted then
+          turn.weight = properties.max_turn_weight;
+      end
   end
 end

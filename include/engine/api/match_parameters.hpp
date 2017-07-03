@@ -50,23 +50,34 @@ namespace api
  */
 struct MatchParameters : public RouteParameters
 {
+    enum class GapsType
+    {
+        Split,
+        Ignore
+    };
+
     MatchParameters()
         : RouteParameters(false,
                           false,
                           false,
                           RouteParameters::GeometriesType::Polyline,
                           RouteParameters::OverviewType::Simplified,
-                          {})
+                          {}),
+          gaps(GapsType::Split), tidy(false)
     {
     }
 
     template <typename... Args>
-    MatchParameters(std::vector<unsigned> timestamps_, Args... args_)
-        : RouteParameters{std::forward<Args>(args_)...}, timestamps{std::move(timestamps_)}
+    MatchParameters(std::vector<unsigned> timestamps_, GapsType gaps_, bool tidy_, Args... args_)
+        : RouteParameters{std::forward<Args>(args_)...}, timestamps{std::move(timestamps_)},
+          gaps(gaps_), tidy(tidy_)
     {
     }
 
     std::vector<unsigned> timestamps;
+    GapsType gaps;
+    bool tidy;
+
     bool IsValid() const
     {
         return RouteParameters::IsValid() &&

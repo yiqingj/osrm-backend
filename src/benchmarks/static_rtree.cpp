@@ -1,10 +1,11 @@
 #include "util/static_rtree.hpp"
-#include "extractor/edge_based_node.hpp"
+#include "extractor/edge_based_node_segment.hpp"
 #include "extractor/query_node.hpp"
 #include "mocks/mock_datafacade.hpp"
 #include "storage/io.hpp"
 #include "engine/geospatial_query.hpp"
 #include "util/coordinate.hpp"
+#include "util/serialization.hpp"
 #include "util/timing_util.hpp"
 
 #include <iostream>
@@ -26,23 +27,16 @@ constexpr int32_t WORLD_MAX_LAT = 90 * COORDINATE_PRECISION;
 constexpr int32_t WORLD_MIN_LON = -180 * COORDINATE_PRECISION;
 constexpr int32_t WORLD_MAX_LON = 180 * COORDINATE_PRECISION;
 
-using RTreeLeaf = extractor::EdgeBasedNode;
-using BenchStaticRTree =
-    util::StaticRTree<RTreeLeaf, util::ShM<util::Coordinate, false>::vector, false>;
+using RTreeLeaf = extractor::EdgeBasedNodeSegment;
+using BenchStaticRTree = util::StaticRTree<RTreeLeaf, storage::Ownership::Container>;
 
 std::vector<util::Coordinate> loadCoordinates(const boost::filesystem::path &nodes_file)
 {
-    osrm::storage::io::FileReader nodes_path_file_reader(
-        nodes_file, osrm::storage::io::FileReader::HasNoFingerprint);
+    storage::io::FileReader nodes_path_file_reader(nodes_file,
+                                                   storage::io::FileReader::VerifyFingerprint);
 
-    extractor::QueryNode current_node;
-    unsigned coordinate_count = nodes_path_file_reader.ReadElementCount32();
-    std::vector<util::Coordinate> coords(coordinate_count);
-    for (unsigned i = 0; i < coordinate_count; ++i)
-    {
-        nodes_path_file_reader.ReadInto(&current_node, 1);
-        coords[i] = util::Coordinate(current_node.lon, current_node.lat);
-    }
+    std::vector<util::Coordinate> coords;
+    storage::serialization::read(nodes_path_file_reader, coords);
     return coords;
 }
 

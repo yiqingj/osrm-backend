@@ -23,11 +23,11 @@ namespace guidance
 
 SliproadHandler::SliproadHandler(const IntersectionGenerator &intersection_generator,
                                  const util::NodeBasedDynamicGraph &node_based_graph,
-                                 const std::vector<QueryNode> &node_info_list,
+                                 const std::vector<util::Coordinate> &coordinates,
                                  const util::NameTable &name_table,
                                  const SuffixTable &street_name_suffix_table)
     : IntersectionHandler(node_based_graph,
-                          node_info_list,
+                          coordinates,
                           name_table,
                           street_name_suffix_table,
                           intersection_generator)
@@ -248,6 +248,20 @@ operator()(const NodeID /*nid*/, const EdgeID source_edge_id, Intersection inter
 
         sliproad_edge = intersection_finder.via_edge_id;
         const auto target_intersection = intersection_finder.intersection;
+        if (target_intersection.isDeadEnd())
+            continue;
+
+        const auto find_valid = [](const IntersectionView &view) {
+            // according to our current sliproad idea, there should only be one valid turn
+            auto itr = std::find_if(
+                view.begin(), view.end(), [](const auto &road) { return road.entry_allowed; });
+            BOOST_ASSERT(itr != view.end());
+            return itr;
+        };
+
+        // require all to be same mode, don't allow changes
+        if (!allSameMode(source_edge_id, sliproad.eid, find_valid(target_intersection)->eid))
+            continue;
 
         // Constrain the Sliproad's target to sliproad, outgoing, incoming from main intersection
         if (target_intersection.size() != 3)
@@ -360,8 +374,8 @@ operator()(const NodeID /*nid*/, const EdgeID source_edge_id, Intersection inter
             // Only check for curvature and ~90 degree when it makes sense to do so.
             const constexpr auto MIN_LENGTH = 3.;
 
-            const auto length = haversineDistance(node_info_list[intersection_node_id],
-                                                  node_info_list[main_road_intersection->node]);
+            const auto length = haversineDistance(coordinates[intersection_node_id],
+                                                  coordinates[main_road_intersection->node]);
 
             const double perpendicular_angle = 90 + FUZZY_ANGLE_DIFFERENCE;
 
@@ -459,17 +473,7 @@ operator()(const NodeID /*nid*/, const EdgeID source_edge_id, Intersection inter
     // In those cases the obvious non-Sliproad is now obvious and we discard the Fork turn type.
     if (sliproad_found && main_road.instruction.type == TurnType::Fork)
     {
-        const auto &source_edge_data = node_based_graph.GetEdgeData(source_edge_id);
-        const auto &main_road_data = node_based_graph.GetEdgeData(main_road.eid);
-
-        const auto same_name = source_edge_data.name_id != EMPTY_NAMEID && //
-                               main_road_data.name_id != EMPTY_NAMEID &&   //
-                               !util::guidance::requiresNameAnnounced(source_edge_data.name_id,
-                                                                      main_road_data.name_id,
-                                                                      name_table,
-                                                                      street_name_suffix_table); //
-
-        if (same_name)
+        if (isSameName(source_edge_id, main_road.eid))
         {
             if (angularDeviation(main_road.angle, STRAIGHT_ANGLE) < 5)
                 intersection[*obvious].instruction.type = TurnType::Suppressed;
@@ -478,7 +482,7 @@ operator()(const NodeID /*nid*/, const EdgeID source_edge_id, Intersection inter
             intersection[*obvious].instruction.direction_modifier =
                 getTurnDirection(intersection[*obvious].angle);
         }
-        else if (main_road_data.name_id != EMPTY_NAMEID)
+        else if (node_based_graph.GetEdgeData(main_road.eid).name_id != EMPTY_NAMEID)
         {
             intersection[*obvious].instruction.type = TurnType::NewName;
             intersection[*obvious].instruction.direction_modifier =
@@ -624,9 +628,9 @@ bool SliproadHandler::isValidSliproadArea(const double max_area,
 {
     using namespace util::coordinate_calculation;
 
-    const auto first = node_info_list[a];
-    const auto second = node_info_list[b];
-    const auto third = node_info_list[c];
+    const auto first = coordinates[a];
+    const auto second = coordinates[b];
+    const auto third = coordinates[c];
 
     const auto length = haversineDistance(first, second);
     const auto heigth = haversineDistance(second, third);
@@ -671,6 +675,16 @@ bool SliproadHandler::isValidSliproadLink(const IntersectionViewData &sliproad,
     }
 
     return true;
+}
+
+bool SliproadHandler::allSameMode(const EdgeID from,
+                                  const EdgeID sliproad_candidate,
+                                  const EdgeID target_road) const
+{
+    return node_based_graph.GetEdgeData(from).travel_mode ==
+               node_based_graph.GetEdgeData(sliproad_candidate).travel_mode &&
+           node_based_graph.GetEdgeData(sliproad_candidate).travel_mode ==
+               node_based_graph.GetEdgeData(target_road).travel_mode;
 }
 
 bool SliproadHandler::canBeTargetOfSliproad(const IntersectionView &intersection)

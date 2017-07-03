@@ -65,18 +65,20 @@ struct ExtractorConfig
         turn_lane_data_file_name = basepath + ".osrm.tld";
         timestamp_file_name = basepath + ".osrm.timestamp";
         geometry_output_path = basepath + ".osrm.geometry";
-        node_output_path = basepath + ".osrm.nodes";
+        node_based_nodes_data_path = basepath + ".osrm.nbg_nodes";
+        edge_based_nodes_data_path = basepath + ".osrm.ebg_nodes";
         edge_output_path = basepath + ".osrm.edges";
         edge_graph_output_path = basepath + ".osrm.ebg";
         rtree_nodes_output_path = basepath + ".osrm.ramIndex";
         rtree_leafs_output_path = basepath + ".osrm.fileIndex";
-        edge_segment_lookup_path = basepath + ".osrm.edge_segment_lookup";
         turn_duration_penalties_path = basepath + ".osrm.turn_duration_penalties";
         turn_weight_penalties_path = basepath + ".osrm.turn_weight_penalties";
         turn_penalties_index_path = basepath + ".osrm.turn_penalties_index";
         edge_based_node_weights_output_path = basepath + ".osrm.enw";
         profile_properties_output_path = basepath + ".osrm.properties";
         intersection_class_data_output_path = basepath + ".osrm.icd";
+        compressed_node_based_graph_output_path = basepath + ".osrm.cnbg";
+        cnbg_ebg_graph_mapping_output_path = basepath + ".osrm.cnbg_to_ebg";
     }
 
     boost::filesystem::path input_path;
@@ -91,23 +93,26 @@ struct ExtractorConfig
     std::string geometry_output_path;
     std::string edge_output_path;
     std::string edge_graph_output_path;
+    std::string node_based_nodes_data_path;
+    std::string edge_based_nodes_data_path;
     std::string edge_based_node_weights_output_path;
-    std::string node_output_path;
     std::string rtree_nodes_output_path;
     std::string rtree_leafs_output_path;
     std::string profile_properties_output_path;
     std::string intersection_class_data_output_path;
     std::string turn_weight_penalties_path;
     std::string turn_duration_penalties_path;
+    std::string compressed_node_based_graph_output_path;
+    std::string cnbg_ebg_graph_mapping_output_path;
 
     unsigned requested_num_threads;
     unsigned small_component_size;
 
     bool generate_edge_lookup;
     std::string turn_penalties_index_path;
-    std::string edge_segment_lookup_path;
 
     bool use_metadata;
+    bool parse_conditionals;
 };
 }
 }

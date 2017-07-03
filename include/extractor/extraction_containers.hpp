@@ -8,6 +8,8 @@
 #include "extractor/restriction.hpp"
 #include "extractor/scripting_environment.hpp"
 
+#include "storage/io.hpp"
+
 #include <cstdint>
 #include <stxxl/vector>
 #include <unordered_map>
@@ -37,16 +39,16 @@ class ExtractionContainers
     void PrepareRestrictions();
     void PrepareEdges(ScriptingEnvironment &scripting_environment);
 
-    void WriteNodes(std::ofstream &file_out_stream) const;
-    void WriteRestrictions(const std::string &restrictions_file_name) const;
-    void WriteEdges(std::ofstream &file_out_stream) const;
+    void WriteNodes(storage::io::FileWriter &file_out) const;
+    void WriteRestrictions(const std::string &restrictions_file_name);
+    void WriteEdges(storage::io::FileWriter &file_out) const;
     void WriteCharData(const std::string &file_name);
 
   public:
     using STXXLNodeIDVector = stxxl::vector<OSMNodeID>;
     using STXXLNodeVector = stxxl::vector<ExternalMemoryNode>;
     using STXXLEdgeVector = stxxl::vector<InternalExtractorEdge>;
-    using STXXLRestrictionsVector = stxxl::vector<InputRestrictionContainer>;
+    using RestrictionsVector = std::vector<InputRestrictionContainer>;
     using STXXLWayIDStartEndVector = stxxl::vector<FirstAndLastSegmentOfWay>;
     using STXXLNameCharData = stxxl::vector<unsigned char>;
     using STXXLNameOffsets = stxxl::vector<unsigned>;
@@ -57,10 +59,11 @@ class ExtractionContainers
     STXXLNameCharData name_char_data;
     STXXLNameOffsets name_offsets;
     // an adjacency array containing all turn lane masks
-    STXXLRestrictionsVector restrictions_list;
+    RestrictionsVector restrictions_list;
     STXXLWayIDStartEndVector way_start_end_id_list;
     std::unordered_map<OSMNodeID, NodeID> external_to_internal_node_id_map;
     unsigned max_internal_node_id;
+    std::vector<TurnRestriction> unconditional_turn_restrictions;
 
     ExtractionContainers();
 

@@ -19,16 +19,18 @@ namespace storage
 const constexpr char CANARY[4] = {'O', 'S', 'R', 'M'};
 
 const constexpr char *block_id_to_name[] = {"NAME_CHAR_DATA",
+                                            "GEOMETRY_ID_LIST",
                                             "NAME_ID_LIST",
-                                            "VIA_NODE_LIST",
-                                            "GRAPH_NODE_LIST",
-                                            "GRAPH_EDGE_LIST",
+                                            "COMPONENT_ID_LIST",
+                                            "TRAVEL_MODE_LIST",
+                                            "CH_GRAPH_NODE_LIST",
+                                            "CH_GRAPH_EDGE_LIST",
                                             "COORDINATE_LIST",
                                             "OSM_NODE_ID_LIST",
                                             "TURN_INSTRUCTION",
-                                            "TRAVEL_MODE",
                                             "ENTRY_CLASSID",
                                             "R_SEARCH_TREE",
+                                            "R_SEARCH_TREE_LEVELS",
                                             "GEOMETRIES_INDEX",
                                             "GEOMETRIES_NODE_LIST",
                                             "GEOMETRIES_FWD_WEIGHT_LIST",
@@ -38,11 +40,9 @@ const constexpr char *block_id_to_name[] = {"NAME_CHAR_DATA",
                                             "HSGR_CHECKSUM",
                                             "TIMESTAMP",
                                             "FILE_INDEX_PATH",
-                                            "CORE_MARKER",
+                                            "CH_CORE_MARKER",
                                             "DATASOURCES_LIST",
-                                            "DATASOURCE_NAME_DATA",
-                                            "DATASOURCE_NAME_OFFSETS",
-                                            "DATASOURCE_NAME_LENGTHS",
+                                            "DATASOURCES_NAMES",
                                             "PROPERTIES",
                                             "BEARING_CLASSID",
                                             "BEARING_OFFSETS",
@@ -56,23 +56,37 @@ const constexpr char *block_id_to_name[] = {"NAME_CHAR_DATA",
                                             "LANE_DESCRIPTION_OFFSETS",
                                             "LANE_DESCRIPTION_MASKS",
                                             "TURN_WEIGHT_PENALTIES",
-                                            "TURN_DURATION_PENALTIES"};
+                                            "TURN_DURATION_PENALTIES",
+                                            "MLD_LEVEL_DATA",
+                                            "MLD_PARTITION",
+                                            "MLD_CELL_TO_CHILDREN",
+                                            "MLD_CELL_WEIGHTS",
+                                            "MLD_CELL_DURATIONS",
+                                            "MLD_CELL_SOURCE_BOUNDARY",
+                                            "MLD_CELL_DESTINATION_BOUNDARY",
+                                            "MLD_CELLS",
+                                            "MLD_CELL_LEVEL_OFFSETS",
+                                            "MLD_GRAPH_NODE_LIST",
+                                            "MLD_GRAPH_EDGE_LIST",
+                                            "MLD_GRAPH_NODE_TO_OFFSET"};
 
 struct DataLayout
 {
     enum BlockID
     {
         NAME_CHAR_DATA = 0,
+        GEOMETRY_ID_LIST,
         NAME_ID_LIST,
-        VIA_NODE_LIST,
-        GRAPH_NODE_LIST,
-        GRAPH_EDGE_LIST,
+        COMPONENT_ID_LIST,
+        TRAVEL_MODE_LIST,
+        CH_GRAPH_NODE_LIST,
+        CH_GRAPH_EDGE_LIST,
         COORDINATE_LIST,
         OSM_NODE_ID_LIST,
         TURN_INSTRUCTION,
-        TRAVEL_MODE,
         ENTRY_CLASSID,
         R_SEARCH_TREE,
+        R_SEARCH_TREE_LEVELS,
         GEOMETRIES_INDEX,
         GEOMETRIES_NODE_LIST,
         GEOMETRIES_FWD_WEIGHT_LIST,
@@ -82,11 +96,9 @@ struct DataLayout
         HSGR_CHECKSUM,
         TIMESTAMP,
         FILE_INDEX_PATH,
-        CORE_MARKER,
+        CH_CORE_MARKER,
         DATASOURCES_LIST,
-        DATASOURCE_NAME_DATA,
-        DATASOURCE_NAME_OFFSETS,
-        DATASOURCE_NAME_LENGTHS,
+        DATASOURCES_NAMES,
         PROPERTIES,
         BEARING_CLASSID,
         BEARING_OFFSETS,
@@ -101,6 +113,18 @@ struct DataLayout
         LANE_DESCRIPTION_MASKS,
         TURN_WEIGHT_PENALTIES,
         TURN_DURATION_PENALTIES,
+        MLD_LEVEL_DATA,
+        MLD_PARTITION,
+        MLD_CELL_TO_CHILDREN,
+        MLD_CELL_WEIGHTS,
+        MLD_CELL_DURATIONS,
+        MLD_CELL_SOURCE_BOUNDARY,
+        MLD_CELL_DESTINATION_BOUNDARY,
+        MLD_CELLS,
+        MLD_CELL_LEVEL_OFFSETS,
+        MLD_GRAPH_NODE_LIST,
+        MLD_GRAPH_EDGE_LIST,
+        MLD_GRAPH_NODE_TO_OFFSET,
         NUM_BLOCKS
     };
 
@@ -118,10 +142,12 @@ struct DataLayout
         entry_align[bid] = alignof(T);
     }
 
+    inline uint64_t GetBlockEntries(BlockID bid) const { return num_entries[bid]; }
+
     inline uint64_t GetBlockSize(BlockID bid) const
     {
         // special bit encoding
-        if (bid == CORE_MARKER)
+        if (bid == CH_CORE_MARKER)
         {
             return (num_entries[bid] / 32 + 1) * entry_size[bid];
         }
@@ -163,6 +189,12 @@ struct DataLayout
         ptr = static_cast<char *>(ptr) + sizeof(CANARY);
         ptr = align(entry_align[bid], entry_size[bid], ptr);
         return ptr;
+    }
+
+    template <typename T> inline T *GetBlockEnd(char *shared_memory, BlockID bid) const
+    {
+        auto begin = GetBlockPtr<T>(shared_memory, bid);
+        return begin + GetBlockEntries(bid);
     }
 
     template <typename T, bool WRITE_CANARY = false>
@@ -207,8 +239,15 @@ enum SharedDataType
 
 struct SharedDataTimestamp
 {
+    explicit SharedDataTimestamp(SharedDataType region, unsigned timestamp)
+        : region(region), timestamp(timestamp)
+    {
+    }
+
     SharedDataType region;
     unsigned timestamp;
+
+    static constexpr const char *name = "osrm-region";
 };
 
 inline std::string regionToString(const SharedDataType region)

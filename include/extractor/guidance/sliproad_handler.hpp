@@ -21,13 +21,12 @@ namespace guidance
 {
 
 // Intersection handlers deal with all issues related to intersections.
-// They assign appropriate turn operations to the TurnOperations.
 class SliproadHandler final : public IntersectionHandler
 {
   public:
     SliproadHandler(const IntersectionGenerator &intersection_generator,
                     const util::NodeBasedDynamicGraph &node_based_graph,
-                    const std::vector<QueryNode> &node_info_list,
+                    const std::vector<util::Coordinate> &coordinates,
                     const util::NameTable &name_table,
                     const SuffixTable &street_name_suffix_table);
 
@@ -64,6 +63,11 @@ class SliproadHandler final : public IntersectionHandler
     bool isValidSliproadLink(const IntersectionViewData &sliproad,
                              const IntersectionViewData &first,
                              const IntersectionViewData &second) const;
+
+    // check if no mode changes are involved
+    bool allSameMode(const EdgeID in_road,
+                     const EdgeID sliproad_candidate,
+                     const EdgeID target_road) const;
 
     // Could a Sliproad reach this intersection?
     static bool canBeTargetOfSliproad(const IntersectionView &intersection);

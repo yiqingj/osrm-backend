@@ -32,9 +32,7 @@ Feature: Raster - weights
 
     Scenario: Weighting not based on raster sources
         Given the profile "testbot"
-        When I run "osrm-extract {osm_file} -p {profile_file}"
-        And I run "osrm-contract {processed_file}"
-        And I route I should get
+        When I route I should get
             | from | to | route    | speed   |
             | a    | b  | ab,ab    | 36 km/h |
             | a    | c  | ab,bc,bc | 36 km/h |
@@ -44,14 +42,12 @@ Feature: Raster - weights
 
     Scenario: Weighting based on raster sources
         Given the profile "rasterbot"
-        When I run "osrm-extract {osm_file} -p {profile_file}"
-        Then stdout should contain "evaluating segment"
-        And I run "osrm-contract {processed_file}"
-        And I route I should get
+        When I route I should get
             | from | to | route    | speed   |
             | a    | b  | ab,ab    | 8 km/h  |
-            | a    | c  | ad,dc,dc | 15 km/h |
-            | b    | c  | bc,bc    | 8 km/h  |
+            | b    | a  | ab,ab    | 22 km/h |
+            | a    | c  | ab,bc,bc | 12 km/h |
+            | b    | c  | bc,bc    | 22 km/h |
             | a    | d  | ad,ad    | 15 km/h |
             | d    | c  | dc,dc    | 15 km/h |
             | d    | e  | de,de    | 10 km/h |
@@ -62,10 +58,7 @@ Feature: Raster - weights
 
     Scenario: Weighting based on raster sources
         Given the profile "rasterbotinterp"
-        When I run "osrm-extract {osm_file} -p {profile_file}"
-        Then stdout should contain "evaluating segment"
-        And I run "osrm-contract {processed_file}"
-        And I route I should get
+        When I route I should get
             | from | to | route    | speed   |
             | a    | b  | ab,ab    | 8 km/h  |
             | a    | c  | ad,dc,dc | 15 km/h |
